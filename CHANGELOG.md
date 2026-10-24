@@ -1,5 +1,15 @@
 # Cambios tras la revisión de código
 
+## Nuevo: el puerto pedido se conserva aunque la app lo ocupe (redirección NAT)
+- Si la app escucha en `0.0.0.0:N`, `add port N` ya no muda la URL a otro número: Nginx escucha en un puerto interno libre y una
+  regla `iptables` (PREROUTING, solo tráfico que no es `lo`) desvía el N de la red hacia él. Persistente con la unidad
+  `tawanzu-redirect-N.service`; `remove port` y `remove all` la quitan. Volver a ejecutar `add port N` reutiliza el puerto interno.
+  Sin systemd o `iptables`, o con `--lan`/`--index`, se mantiene el comportamiento anterior.
+
+## Nuevo: `add port` verifica la URL al terminar
+- Pide la URL publicada y dice qué ve: tu app, la página «Welcome to nginx!» (otro sitio la tapa), 502/503/504 (la app no
+  responde en 127.0.0.1:N) o 403 (límite por IP), con la pista para arreglarlo.
+
 ## Nuevo: detección de puerto equivocado (`add port` y `doctor`)
 - `add port N`: si nada escucha en N pero sí en un puerto cercano (±10), propone usarlo como destino de Nginx y sigue publicando N.
   Con `--yes` solo avisa. Una publicación existente cuya app está caída se reemplaza si la nueva sí responde.

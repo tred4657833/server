@@ -58,6 +58,15 @@ y acceso limitado a tu red local, y lo habilita en `sites-enabled`. El contenido
 restaura. Si tu sitio por defecto estaba personalizado, pregunta antes; si tu sistema no usa `sites-available` (RHEL/Fedora), usa un archivo
 propio en `conf.d` como el resto de puertos.
 
+Al terminar, `add port` pide la URL publicada y te dice si responde tu app o si algo la tapa (p. ej. la página «Welcome to nginx!»).
+
+### El puerto que escribes es el que usas
+`add port 1555` te deja entrar por `http://IP:1555/`. Si la app escucha solo en `127.0.0.1:1555`, Nginx usa ese mismo número en tu IP
+local. Si la app ya ocupa el 1555 en **todas** las interfaces (`0.0.0.0`), Nginx no puede escuchar ahí; en vez de mudarse a otro número,
+escucha en un puerto interno libre y una regla NAT (`iptables`, unidad `tawanzu-redirect-1555.service`) desvía al interno lo que llega
+de la red al 1555. Tu app no se toca ni se mueve, y Nginx la sigue alcanzando por `127.0.0.1:1555`. `remove port` quita la regla. Si el
+sistema no tiene systemd o `iptables`, mantiene el comportamiento anterior (publicar en otro puerto y avisar). Solo IPv4.
+
 ### Cuando el puerto está mal
 - Si pides `add port 1555` pero nada escucha ahí y sí en uno cercano (±10, p. ej. el 1556), `add port` te pregunta si esa es tu app y,
   si aceptas, publica el 1555 apuntando al 1556. Con `--yes` no cambia nada solo: te dice el comando exacto.

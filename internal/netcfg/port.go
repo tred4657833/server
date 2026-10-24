@@ -3,7 +3,9 @@ package netcfg
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +167,9 @@ type PortOptions struct {
 	From    string // IP/CIDR permitida (varias separadas por coma)
 	Index   bool   // página principal: puerto 80 (http://IP/), solo para la red local; reemplaza lo que hubiera en el 80
 	LAN     bool   // solo red local: escucha en las IPs privadas, puerto 80 por defecto y firewall solo para la LAN
+	// CanRedirect permite usar una regla NAT cuando la app ocupa su puerto en todas las interfaces, para que
+	// se siga entrando por ese mismo número en vez de mudar Nginx a otro visible.
+	CanRedirect bool
 }
 
 // PortPlan es el resultado de decidir cómo publicar un puerto.
@@ -172,7 +177,9 @@ type PortPlan struct {
 	Site    PortSite
 	Running bool   // algo escucha ya en el puerto de la app
 	Moved   bool   // se eligió otro puerto público porque la app ocupa el suyo en todas las interfaces
-	Note    string // aviso para mostrar al usuario
+	// Redirect > 0: Nginx escucha en Site.Public (interno) y una regla NAT desvía a él el puerto Redirect de la red.
+	Redirect int
+	Note     string // aviso para mostrar al usuario
 }
 
 // PlanPort decide el puerto público y las direcciones de escucha sin modificar nada.
@@ -221,7 +228,13 @@ func PlanPort(o PortOptions, listening func(int) []net.IP, localIPs []string, bu
 		if !pl.Moved {
 			return pl, fmt.Errorf("no hay un puerto público libre por encima de %d", o.Backend)
 		}
-		pl.Note = fmt.Sprintf("tu app escucha en todas las interfaces del puerto %d: Nginx la publica en el %d y el %d queda cerrado en el firewall. Para usar el mismo número, haz que la app escuche solo en 127.0.0.1", o.Backend, pl.Site.Public, o.Backend)
+		if o.CanRedirect && !o.LAN {
+			pl.Redirect = o.Backend
+			pl.Note = fmt.Sprintf("tu app escucha en todas las interfaces del puerto %d: se entra igualmente por el %d, porque una regla de red lo desvía a Nginx (puerto interno %d); la app no se toca. Para quitar esa regla basta `tawanzu remove port %d`", o.Backend, o.Backend, pl.Site.Public, pl.Site.Public)
+			pl.Moved = false
+		} else {
+			pl.Note = fmt.Sprintf("tu app escucha en todas las interfaces del puerto %d: Nginx la publica en el %d y el %d queda cerrado en el firewall. Para usar el mismo número, haz que la app escuche solo en 127.0.0.1", o.Backend, pl.Site.Public, o.Backend)
+		}
 	}
 	if pl.Site.Public == pl.Site.Backend || o.LAN {
 		if len(localIPs) == 0 {
@@ -290,7 +303,29 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		return fmt.Errorf("el puerto público %d ya publica la app del puerto %d: quítala con `tawanzu remove port %d` o elige otro con --public", pubKey, prev.Backend, pubKey)
 	}
 	ours := prev != nil && !replace
-	pl, err := PlanPort(o, system.ListenAddrs, local, func(p int) bool { return used[p] || st.Published[fmt.Sprint(p)] != nil }, ours)
+	o.CanRedirect = CanRedirect(i)
+	// Volver a publicar una app que ya tiene redirección reutiliza su puerto interno en vez de dejar uno huérfano.
+	stale := map[int]bool{}
+	if o.Public == 0 && !o.LAN {
+		for _, pp := range st.Published {
+			if pp.Backend == o.Backend && pp.Redirect > 0 {
+				stale[pp.Public] = true
+			}
+		}
+	}
+	listening := func(p int) []net.IP {
+		if stale[p] {
+			return nil
+		}
+		return system.ListenAddrs(p)
+	}
+	busy := func(p int) bool {
+		if stale[p] {
+			return false
+		}
+		return used[p] || st.Published[fmt.Sprint(p)] != nil
+	}
+	pl, err := PlanPort(o, listening, local, busy, ours)
 	if err != nil {
 		return err
 	}
@@ -298,6 +333,12 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	fwOK, err := prepareHost(i)
 	if err != nil {
 		return err
+	}
+	for k := range stale {
+		ui.Info("el puerto %d ya estaba publicado con una redirección: se vuelve a configurar", k)
+		if err := UnpublishPort(i, st, k); err != nil {
+			return err
+		}
 	}
 	if replace {
 		ui.Info("el puerto público %d apuntaba a la app del puerto %d: se reemplaza por la del %d", pubKey, prev.Backend, o.Backend)
@@ -307,7 +348,11 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 	ui.Title("Publicar puerto")
 	ui.Plain("App:     127.0.0.1:%d (privada)", s.Backend)
-	ui.Plain("Público: %d  →  Nginx  →  127.0.0.1:%d", s.Public, s.Backend)
+	if pl.Redirect > 0 {
+		ui.Plain("Red:     %d  →  (regla NAT)  →  Nginx %d  →  127.0.0.1:%d", pl.Redirect, s.Public, s.Backend)
+	} else {
+		ui.Plain("Público: %d  →  Nginx  →  127.0.0.1:%d", s.Public, s.Backend)
+	}
 	if pl.Note != "" {
 		ui.Warn("%s", pl.Note)
 	}
@@ -382,6 +427,15 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		_ = services.Reload("nginx")
 		return fmt.Errorf("Nginx no pudo recargar (¿otro programa usa el puerto %d?): %w", s.Public, err)
 	}
+	if pl.Redirect > 0 {
+		ui.Step("redirigiendo el puerto %d de la red a Nginx (%d), sin tocar tu app", pl.Redirect, s.Public)
+		if err := InstallRedirect(pl.Redirect, s.Public); err != nil {
+			undo()
+			runner.Restore(portInfraPath, infraBak)
+			_ = services.Reload("nginx")
+			return fmt.Errorf("%w\n(alternativa: tawanzu add port %d --public <otro puerto>)", err, o.Backend)
+		}
+	}
 	if asDefault {
 		ui.OK("sitio por defecto de Nginx reescrito: ahora es tu app (copia del original en %s)", stdDefault.orig)
 	}
@@ -401,7 +455,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 
 	// 3. Estado
-	st.Publish(state.Published{Public: s.Public, Backend: s.Backend, From: s.From, Default: asDefault, Created: time.Now()})
+	st.Publish(state.Published{Public: s.Public, Backend: s.Backend, From: s.From, Default: asDefault, Redirect: pl.Redirect, Created: time.Now()})
 	for _, f := range splitFrom(s.From) {
 		st.AddPort(spec.String() + " desde " + f)
 	}
@@ -420,13 +474,21 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		host = firstOf(local)
 	}
 	if host != "" {
-		url := fmt.Sprintf("http://%s:%d/", host, s.Public)
-		if s.Public == 80 {
+		shown := s.Public
+		if pl.Redirect > 0 {
+			shown = pl.Redirect // se entra por el puerto pedido; la regla NAT lo manda a Nginx
+		}
+		url := fmt.Sprintf("http://%s:%d/", host, shown)
+		if shown == 80 {
 			url = "http://" + host + "/"
 		}
 		ui.Plain("")
 		ui.Plain("   Listo: %s", ui.Bold(url))
 		ui.Plain("")
+		if !runner.DryRun {
+			// Desde esta misma máquina la redirección no aplica (el tráfico entra por `lo`): se comprueba Nginx directo.
+			verifySite(fmt.Sprintf("http://%s:%d/", host, s.Public), s.Backend)
+		}
 	}
 	if o.LAN {
 		ui.OK("solo accesible desde tu red local (%s); la app y el puerto %d siguen privados", strings.Join(splitFrom(s.From), ", "), s.Backend)
@@ -479,6 +541,9 @@ func UnpublishPort(i *system.Info, st *state.State, public int) error {
 		return fmt.Errorf("el puerto %d no se publicó con `tawanzu add port`", public)
 	}
 	path := portConfPath(public)
+	if p.Redirect > 0 {
+		RemoveRedirect(p.Redirect)
+	}
 	if p.Default {
 		if err := stdDefault.restore(); err != nil {
 			return err
@@ -733,4 +798,60 @@ func LoopbackOnly(port int) bool {
 		}
 	}
 	return true
+}
+
+// probeResult es lo que devolvió Nginx al pedirle la URL recién publicada.
+type probeResult int
+
+const (
+	probeOK      probeResult = iota // contestó algo que no es un error de Nginx
+	probeWelcome                    // página de fábrica «Welcome to nginx!»: otro server atiende esa dirección
+	probeBackend                    // 502/503/504: Nginx funciona pero la app no responde
+	probeDenied                     // 403: acceso denegado por Nginx
+	probeDown                       // no se pudo conectar
+)
+
+// probe pide la URL y clasifica la respuesta.
+func probe(url string) (probeResult, int, error) {
+	c := &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var resp *http.Response
+	var err error
+	for try := 0; try < 3; try++ { // Nginx acaba de recargar: se reintenta un momento
+		if resp, err = c.Get(url); err == nil {
+			break
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	if err != nil {
+		return probeDown, 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	switch {
+	case strings.Contains(string(body), "Welcome to nginx"):
+		return probeWelcome, resp.StatusCode, nil
+	case resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504:
+		return probeBackend, resp.StatusCode, nil
+	case resp.StatusCode == 403:
+		return probeDenied, resp.StatusCode, nil
+	}
+	return probeOK, resp.StatusCode, nil
+}
+
+// verifySite comprueba que la URL publicada responde la app y no otra cosa, y explica el motivo si no.
+func verifySite(url string, backend int) {
+	res, code, err := probe(url)
+	switch res {
+	case probeOK:
+		ui.OK("verificado: %s responde (HTTP %d)", url, code)
+	case probeWelcome:
+		ui.Warn("%s muestra la página «Welcome to nginx!»: otro sitio de Nginx atiende esa dirección en vez de tu app", url)
+		ui.Info("búscalo con: sudo grep -RnE 'default_server|Welcome' /etc/nginx/   (si quieres tu app en el puerto 80: tawanzu add port %d --index)", backend)
+	case probeBackend:
+		ui.Warn("%s: Nginx funciona pero la app no responde en 127.0.0.1:%d (HTTP %d); arráncala o revisa que escuche ahí", url, backend, code)
+	case probeDenied:
+		ui.Info("%s devolvió 403: Nginx limita el acceso por IP (--lan/--from); desde un equipo de esa red debería abrir", url)
+	default:
+		ui.Warn("no se pudo comprobar %s: %v", url, err)
+	}
 }

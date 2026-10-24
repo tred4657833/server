@@ -88,6 +88,12 @@ func RemoveAll(i *system.Info, st *state.State) error {
 			for _, f := range []string{"tawanzu-guard.service", "tawanzu-backup.service", "tawanzu-backup.timer"} {
 				removeFile("/etc/systemd/system/" + f)
 			}
+			// Redirecciones de puerto de `add port`: al parar la unidad se borra su regla de iptables.
+			redirs, _ := filepath.Glob("/etc/systemd/system/tawanzu-redirect-*.service")
+			for _, f := range redirs {
+				disableUnit(filepath.Base(f))
+				removeFile(f)
+			}
 			_, err := runner.Run("systemctl", "daemon-reload")
 			return err
 		})

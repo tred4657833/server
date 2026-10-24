@@ -2,6 +2,8 @@ package netcfg
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -310,5 +312,70 @@ func TestDefaultSiteUndo(t *testing.T) {
 	}
 	if _, err := os.Stat(d.orig); err == nil {
 		t.Fatal("undo debe quitar la copia que creó")
+	}
+}
+
+func TestProbeClassifiesResponses(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		body string
+		want probeResult
+	}{
+		{"app", 200, "<html>mi UI</html>", probeOK},
+		{"welcome", 200, "<h1>Welcome to nginx!</h1>", probeWelcome},
+		{"app caída", 502, "Bad Gateway", probeBackend},
+		{"503", 503, "no responde", probeBackend},
+		{"denegado", 403, "Forbidden", probeDenied},
+	}
+	for _, c := range cases {
+		c := c
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(c.code)
+			_, _ = w.Write([]byte(c.body))
+		}))
+		got, code, err := probe(srv.URL)
+		srv.Close()
+		if err != nil || got != c.want || code != c.code {
+			t.Errorf("%s: probe = %v (%d), %v; quería %v", c.name, got, code, err, c.want)
+		}
+	}
+}
+
+// La app ocupa el 1555 en todas las interfaces: con redirección se sigue entrando por el 1555 y Nginx va a otro interno.
+func TestPlanPortRedirectKeepsRequestedPort(t *testing.T) {
+	exposed := func(p int) []net.IP {
+		if p == 1555 {
+			return []net.IP{net.ParseIP("0.0.0.0")}
+		}
+		return nil
+	}
+	free := func(int) bool { return false }
+	pl, err := PlanPort(PortOptions{Backend: 1555, CanRedirect: true}, exposed, []string{"192.168.0.113"}, free, false)
+	if err != nil || pl.Redirect != 1555 || pl.Site.Public == 1555 || pl.Site.Public == 0 || pl.Moved {
+		t.Fatalf("debe redirigir el 1555 a un puerto interno libre: %+v %v", pl, err)
+	}
+	// Sin soporte de redirección (sin iptables/systemd) o con --lan, se mantiene el comportamiento anterior.
+	pl, err = PlanPort(PortOptions{Backend: 1555}, exposed, []string{"192.168.0.113"}, free, false)
+	if err != nil || pl.Redirect != 0 || !pl.Moved || pl.Site.Public == 1555 {
+		t.Fatalf("sin CanRedirect debe mudar el puerto público: %+v %v", pl, err)
+	}
+	// Una app solo en loopback no necesita nada de esto.
+	loop := func(int) []net.IP { return []net.IP{net.ParseIP("127.0.0.1")} }
+	pl, _ = PlanPort(PortOptions{Backend: 1555, CanRedirect: true}, loop, []string{"192.168.0.113"}, free, false)
+	if pl.Redirect != 0 || pl.Site.Public != 1555 {
+		t.Fatalf("loopback: Nginx usa el mismo número sin redirección: %+v", pl)
+	}
+}
+
+func TestRenderRedirectUnit(t *testing.T) {
+	u := RenderRedirectUnit(1555, 1556)
+	for _, want := range []string{
+		"--dport 1555", "--to-ports 1556", "! -i lo", "iptables -w -t nat -C PREROUTING", "iptables -w -t nat -I PREROUTING",
+		"iptables -w -t nat -D PREROUTING", "RemainAfterExit=yes", "WantedBy=multi-user.target",
+	} {
+		if !strings.Contains(u, want) {
+			t.Errorf("la unidad no contiene %q:\n%s", want, u)
+		}
 	}
 }
