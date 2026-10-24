@@ -40,6 +40,7 @@ Opciones globales: `--dry-run` (simula y no guarda estado), `--yes`, `--verbose`
 ### `add port`
 ```
 sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555
+sudo tawanzu add port 1555 --lan            # SOLO red local: http://192.168.x.x/ (puerto 80), nada hacia Internet
 sudo tawanzu add port 1555 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
 sudo tawanzu add port 3000 --public 8080    # Nginx escucha en 8080 y reenvía a la app en 3000
 sudo tawanzu add port 5432 --raw            # solo firewall, sin Nginx (bases de datos, TCP crudo)
@@ -47,6 +48,8 @@ sudo tawanzu add port 8080/udp 8000-8010    # UDP y rangos: solo firewall
 sudo tawanzu remove port 1555               # deshacer
 ```
 Un solo comando deja listo: proxy de Nginx, límites por IP (40 conexiones simultáneas, `tawanzu_req` por segundo con ráfaga de 60; responde 429), keep-alive hacia la app, timeouts contra conexiones lentas, bloqueo de dotfiles (`/.env`, `/.git`), cabeceras de seguridad, `X-Forwarded-For` sin falsificar, firewall (solo el puerto público) y registro en `state.json`. Si Nginx no pasa `nginx -t` o no recarga, se restaura la configuración anterior.
+
+**`--lan`.** Nginx escucha únicamente en las IPs privadas del servidor (192.168.x, 10.x, 172.16-31.x) en el puerto 80 (o el de `--public`), el firewall solo admite la red local (la `/24` de cada interfaz, o lo que pongas en `--from`) y la app sigue en su puerto privado. Dos apps no pueden usar el 80: la segunda debe llevar otro `--public`.
 
 **Cómo escucha cada cosa.** Tu app debe escuchar en `127.0.0.1:N`. Nginx escucha en las IPs de la máquina en el mismo número (no chocan: un bind a una IP concreta convive con otro a `127.0.0.1`). Si tu app ya escucha en `0.0.0.0:N` (típico de `app.listen(3000)`), Nginx no puede ocupar el mismo puerto: elige el siguiente libre (o `--public`), deja N cerrado en el firewall y te lo explica. Si nada escucha todavía, configura igual y Nginx responde 503 hasta que arranque la app. Si el puerto está en uso pero no habla HTTP, ofrece abrirlo tal cual.
 

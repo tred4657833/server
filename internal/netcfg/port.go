@@ -65,7 +65,11 @@ func (p PortSite) Render() string {
 	}
 	b.WriteString("    server_name _;\n\n")
 	if p.From != "" {
-		fmt.Fprintf(&b, "    # Solo esta IP/red (además del firewall)\n    allow %s;\n    allow 127.0.0.1;\n    deny all;\n\n", p.From)
+		b.WriteString("    # Solo estas IP/redes (además del firewall)\n")
+		for _, f := range splitFrom(p.From) {
+			fmt.Fprintf(&b, "    allow %s;\n", f)
+		}
+		b.WriteString("    allow 127.0.0.1;\n    deny all;\n\n")
 	}
 	b.WriteString(`    # Concurrencia y protección frente a abusos
     limit_conn tawanzu_conn 40;
@@ -149,7 +153,8 @@ func disableDefaultSiteAt(link string) (bool, error) {
 type PortOptions struct {
 	Backend int    // puerto donde escucha la app (127.0.0.1)
 	Public  int    // 0 = automático
-	From    string // IP/CIDR permitida
+	From    string // IP/CIDR permitida (varias separadas por coma)
+	LAN     bool   // solo red local: escucha en las IPs privadas, puerto 80 por defecto y firewall solo para la LAN
 }
 
 // PortPlan es el resultado de decidir cómo publicar un puerto.
@@ -164,10 +169,11 @@ type PortPlan struct {
 // ours indica que ya existe una publicación nuestra de ese puerto (se ignoran las direcciones de Nginx).
 func PlanPort(o PortOptions, listening func(int) []net.IP, localIPs []string, busy func(int) bool, ours bool) (PortPlan, error) {
 	var pl PortPlan
-	for _, r := range []int{80, 443} {
-		if o.Backend == r || o.Public == r {
-			return pl, fmt.Errorf("los puertos 80 y 443 son de Nginx: para publicar tu app con un dominio usa `tawanzu setup domain tudominio.com --port %d`", o.Backend)
-		}
+	if o.Backend == 80 || o.Backend == 443 || o.Public == 443 || (o.Public == 80 && !o.LAN) {
+		return pl, fmt.Errorf("los puertos 80 y 443 son de Nginx: para la red local usa `tawanzu add port %d --lan` (publica en el 80 solo para tu LAN) y para Internet con dominio `tawanzu setup domain tudominio.com --port %d`", o.Backend, o.Backend)
+	}
+	if o.LAN && o.Public == 0 {
+		o.Public = 80
 	}
 	for _, s := range system.SSHPorts() {
 		if o.Backend == s || o.Public == s {
@@ -207,7 +213,7 @@ func PlanPort(o PortOptions, listening func(int) []net.IP, localIPs []string, bu
 		}
 		pl.Note = fmt.Sprintf("tu app escucha en todas las interfaces del puerto %d: Nginx la publica en el %d y el %d queda cerrado en el firewall. Para usar el mismo número, haz que la app escuche solo en 127.0.0.1", o.Backend, pl.Site.Public, o.Backend)
 	}
-	if pl.Site.Public == pl.Site.Backend {
+	if pl.Site.Public == pl.Site.Backend || o.LAN {
 		if len(localIPs) == 0 {
 			return pl, fmt.Errorf("no se encontró ninguna IP local donde escuchar; usa --public <otro puerto>")
 		}
@@ -231,8 +237,10 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	if o.Backend < 1 || o.Backend > 65535 || o.Public < 0 || o.Public > 65535 {
 		return fmt.Errorf("puerto inválido")
 	}
-	if o.From != "" && !security.ValidSource(o.From) {
-		return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", o.From)
+	for _, f := range splitFrom(o.From) {
+		if !security.ValidSource(f) {
+			return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", f)
+		}
 	}
 	if err := security.FirewallReady(i); err != nil {
 		return err
@@ -241,11 +249,31 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		return fmt.Errorf("Nginx no está instalado: ejecuta primero `sudo tawanzu init`")
 	}
 	var local []string
+	var lanNets []string
 	for _, l := range system.LocalIPs() {
+		if o.LAN && !net.ParseIP(l.IP).IsPrivate() {
+			continue // en modo LAN solo se escucha en IPs privadas (192.168.x, 10.x, 172.16-31.x)
+		}
 		local = append(local, l.IP)
 	}
+	if o.LAN {
+		if len(local) == 0 {
+			return fmt.Errorf("no hay ninguna IP de red local (192.168.x.x, 10.x.x.x...) en este servidor")
+		}
+		lanNets = lanCIDRs(local)
+		if o.From == "" {
+			o.From = strings.Join(lanNets, ",")
+		}
+	}
 	used := st.UsedPorts()
-	_, ours := st.Published[fmt.Sprint(firstPositive(o.Public, o.Backend))]
+	pubKey := firstPositive(o.Public, o.Backend)
+	if o.LAN && o.Public == 0 {
+		pubKey = 80
+	}
+	if prev := st.Published[fmt.Sprint(pubKey)]; prev != nil && prev.Backend != o.Backend {
+		return fmt.Errorf("el puerto público %d ya publica la app del puerto %d: quítala con `tawanzu remove port %d` o elige otro con --public", pubKey, prev.Backend, pubKey)
+	}
+	_, ours := st.Published[fmt.Sprint(pubKey)]
 	pl, err := PlanPort(o, system.ListenAddrs, local, func(p int) bool { return used[p] || st.Published[fmt.Sprint(p)] != nil }, ours)
 	if err != nil {
 		return err
@@ -307,20 +335,23 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	// 2. Firewall: solo el puerto público; el de la app sigue cerrado si es otro.
 	ui.Step("abriendo %d/tcp en el firewall", s.Public)
 	spec := security.PortSpec{Start: s.Public, End: s.Public, Proto: "tcp"}
-	if err := security.OpenPorts(i, []security.PortSpec{spec}, s.From); err != nil {
-		runner.Restore(path, bak)
-		runner.Restore(portInfraPath, infraBak)
-		_ = services.Reload("nginx")
-		return err
+	for _, f := range fromList(s.From) {
+		if err := security.OpenPorts(i, []security.PortSpec{spec}, f); err != nil {
+			runner.Restore(path, bak)
+			runner.Restore(portInfraPath, infraBak)
+			_ = services.Reload("nginx")
+			return err
+		}
 	}
 
 	// 3. Estado
 	st.Publish(state.Published{Public: s.Public, Backend: s.Backend, From: s.From, Created: time.Now()})
-	entry := spec.String()
-	if s.From != "" {
-		entry += " desde " + s.From
+	for _, f := range splitFrom(s.From) {
+		st.AddPort(spec.String() + " desde " + f)
 	}
-	st.AddPort(entry)
+	if s.From == "" {
+		st.AddPort(spec.String())
+	}
 	st.Log(fmt.Sprintf("add port %d (público %d)", s.Backend, s.Public))
 	if err := st.Save(); err != nil {
 		return err
@@ -328,10 +359,21 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 
 	ui.OK("puerto %d publicado", s.Public)
 	host := firstNonEmpty(i.PublicIP, firstOf(local))
-	if host != "" {
-		ui.Plain("   %s", ui.Bold(fmt.Sprintf("http://%s:%d", host, s.Public)))
+	if o.LAN {
+		host = firstOf(local)
 	}
-	ui.Info("es HTTP sin cifrar; para HTTPS usa un dominio: tawanzu setup domain tudominio.com --port %d", s.Backend)
+	if host != "" {
+		url := fmt.Sprintf("http://%s:%d", host, s.Public)
+		if s.Public == 80 {
+			url = "http://" + host + "/"
+		}
+		ui.Plain("   %s", ui.Bold(url))
+	}
+	if o.LAN {
+		ui.OK("solo accesible desde tu red local (%s); la app y el puerto %d siguen privados", strings.Join(splitFrom(s.From), ", "), s.Backend)
+	} else {
+		ui.Info("es HTTP sin cifrar; para HTTPS usa un dominio: tawanzu setup domain tudominio.com --port %d", s.Backend)
+	}
 	return nil
 }
 
@@ -354,8 +396,10 @@ func UnpublishPort(i *system.Info, st *state.State, public int) error {
 		return err
 	}
 	spec := security.PortSpec{Start: public, End: public, Proto: "tcp"}
-	if err := security.ClosePorts(i, []security.PortSpec{spec}, p.From); err != nil {
-		ui.Warn("no se pudo cerrar %d en el firewall: %v", public, err)
+	for _, f := range fromList(p.From) {
+		if err := security.ClosePorts(i, []security.PortSpec{spec}, f); err != nil {
+			ui.Warn("no se pudo cerrar %d en el firewall: %v", public, err)
+		}
 	}
 	st.Unpublish(public)
 	st.Log(fmt.Sprintf("remove port %d", public))
@@ -385,4 +429,45 @@ func firstNonEmpty(v ...string) string {
 		}
 	}
 	return ""
+}
+
+// splitFrom separa "10.0.0.5,192.168.0.0/24" en sus partes (vacío = sin restricción).
+func splitFrom(f string) []string {
+	var out []string
+	for _, x := range strings.Split(f, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// fromList es splitFrom pero devuelve [""] si no hay restricción, para llamar una vez al firewall.
+func fromList(f string) []string {
+	if l := splitFrom(f); len(l) > 0 {
+		return l
+	}
+	return []string{""}
+}
+
+// lanCIDRs devuelve la red (CIDR) de cada IP local dada, p. ej. 192.168.0.113 → 192.168.0.0/24.
+func lanCIDRs(ips []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	ifs, _ := net.Interfaces()
+	for _, ifc := range ifs {
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			n, ok := a.(*net.IPNet)
+			if !ok || !contains(ips, n.IP.String()) {
+				continue
+			}
+			c := (&net.IPNet{IP: n.IP.Mask(n.Mask), Mask: n.Mask}).String()
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+	}
+	return out
 }

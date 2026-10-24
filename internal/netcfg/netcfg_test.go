@@ -171,3 +171,29 @@ func TestDisableDefaultSite(t *testing.T) {
 		t.Error("un default personalizado no debe desactivarse")
 	}
 }
+
+func TestPlanPortLAN(t *testing.T) {
+	app := func(p int) []net.IP { // la app escucha en todas las interfaces del 1555: en LAN no importa
+		if p == 1555 {
+			return ips("0.0.0.0")
+		}
+		return nil
+	}
+	free := func(int) bool { return false }
+	pl, err := PlanPort(PortOptions{Backend: 1555, LAN: true}, app, []string{"192.168.0.113"}, free, false)
+	if err != nil || pl.Site.Public != 80 || len(pl.Site.Binds) != 1 || pl.Site.Binds[0] != "192.168.0.113" {
+		t.Errorf("LAN: %+v %v", pl, err)
+	}
+	if _, err := PlanPort(PortOptions{Backend: 1555, Public: 80}, app, []string{"192.168.0.113"}, free, false); err == nil {
+		t.Error("el 80 sin --lan debe rechazarse")
+	}
+	if _, err := PlanPort(PortOptions{Backend: 1555, Public: 443, LAN: true}, app, []string{"192.168.0.113"}, free, false); err == nil {
+		t.Error("el 443 debe rechazarse")
+	}
+	out := PortSite{Public: 80, Backend: 1555, Binds: []string{"192.168.0.113"}, From: "192.168.0.0/24,10.0.0.0/8"}.Render()
+	for _, s := range []string{"listen 192.168.0.113:80;", "allow 192.168.0.0/24;", "allow 10.0.0.0/8;", "deny all;"} {
+		if !strings.Contains(out, s) {
+			t.Errorf("falta %q", s)
+		}
+	}
+}

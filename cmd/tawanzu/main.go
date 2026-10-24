@@ -255,8 +255,10 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 		return err
 	}
 	from := fl["from"]
-	if from != "" && !security.ValidSource(from) {
-		return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", from)
+	for _, f := range strings.Split(from, ",") {
+		if f = strings.TrimSpace(f); f != "" && !security.ValidSource(f) {
+			return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", f)
+		}
 	}
 	public := 0
 	if fl["public"] != "" {
@@ -281,7 +283,7 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 			raw = append(raw, p)
 			continue
 		}
-		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: p.Start, Public: public, From: from}); err != nil {
+		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: p.Start, Public: public, From: from, LAN: fl["lan"] == "true"}); err != nil {
 			return err
 		}
 	}
@@ -583,6 +585,7 @@ HERRAMIENTAS
   view [--local] [--public] [--web] [--json]                 IP local (privada), IP pública y dónde apunta cada dominio; avisa si cambiaron
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso
+  add port <n> --lan                 Como arriba pero SOLO para tu red local: http://192.168.x.x/ (puerto 80), sin exponerlo a Internet
   add port <n> [--from IP] [--public P]   Publica la app del puerto n: Nginx (proxy, límites), firewall y estado, todo en uno
   add port <n...> --raw              Solo firewall, sin Nginx (UDP, rangos 8000-8010, bases de datos)
   remove port <puerto_publico>       Deja de publicarlo (Nginx + firewall)

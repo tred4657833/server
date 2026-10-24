@@ -8,6 +8,7 @@
   fábrica (el archivo en `sites-available` se conserva; uno personalizado no se toca).
 - Detecta cómo escucha la app (`/proc/net/tcp*`): en loopback → mismo número público; en `0.0.0.0` → otro puerto
   público para no exponerla sin Nginx. `--public`, `--from` (firewall + `allow/deny` en Nginx) y `--raw` (comportamiento anterior).
+- `add port N --lan`: publica en `http://<IP privada>/` (puerto 80) solo para la red local; firewall limitado a la LAN.
 - `remove port <público>` deshace Nginx y firewall. Reversión automática si `nginx -t` o la recarga fallan.
 - Probado con Nginx 1.24 real (proxy, 403 en dotfiles, 503 con app caída, 429 bajo ráfaga de 200 peticiones, convivencia
   de `127.0.0.1:N` y `IP:N`) y pruebas unitarias. **Sin probar** contra ufw/firewalld/systemd reales: úsalo primero en un VPS desechable.
