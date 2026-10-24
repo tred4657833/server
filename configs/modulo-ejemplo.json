@@ -1,0 +1,9 @@
+{
+  "name": "mongodb",
+  "description": "Ejemplo de módulo externo (copiar a <home>/modules/mongodb.json)",
+  "packages": { "apt": ["mongodb"] },
+  "services": { "apt": ["mongodb"] },
+  "ram_mb": 512,
+  "check": "mongod",
+  "post": []
+}
