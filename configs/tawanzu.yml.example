@@ -1,0 +1,6 @@
+# Coloca este archivo como tawanzu.yml en la raíz de tu repositorio.
+# Tiene prioridad sobre la autodetección.
+kind: node            # go | node | php | python | docker | static
+build: npm ci && npm run build
+start: node server.js # el puerto llega en la variable de entorno PORT
+port: 3000            # opcional: fija el puerto interno
