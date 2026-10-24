@@ -45,6 +45,7 @@ type PortSite struct {
 	Binds []string
 	From  string // IP/CIDR permitida ("" = cualquiera)
 	IPv6  bool   // escuchar también en [::]: solo si el sistema tiene IPv6 (si no, nginx no arranca)
+	Path    string // redirige "/" a esta ruta
 	// Default marca el server como default_server: --index lo escribe en el sitio por defecto de Nginx.
 	Default bool
 }
@@ -100,6 +101,9 @@ func (p PortSite) Render() string {
     location ~ /\.(?!well-known) { deny all; }
 
 `)
+	if p.Path != "" && p.Path != "/" {
+		fmt.Fprintf(&b, "    location = / { return 302 %s; }\n\n", p.Path)
+	}
 	fmt.Fprintf(&b, `    location / {
         proxy_pass http://%s;
         proxy_http_version 1.1;
@@ -165,6 +169,7 @@ type PortOptions struct {
 	Backend int    // puerto donde escucha la app (127.0.0.1)
 	Public  int    // 0 = automático
 	From    string // IP/CIDR permitida (varias separadas por coma)
+	Path    string // si la UI de la app no está en "/", la entrada redirige a esta ruta (p. ej. /ui/)
 	Index   bool   // página principal: puerto 80 (http://IP/), solo para la red local; reemplaza lo que hubiera en el 80
 	LAN     bool   // solo red local: escucha en las IPs privadas, puerto 80 por defecto y firewall solo para la LAN
 	// CanRedirect permite usar una regla NAT cuando la app ocupa su puerto en todas las interfaces, para que
@@ -209,7 +214,7 @@ func PlanPort(o PortOptions, listening func(int) []net.IP, localIPs []string, bu
 	}
 	pl.Running = len(ips) > 0
 	_, v6 := os.Stat("/proc/net/if_inet6")
-	pl.Site = PortSite{Public: o.Backend, Backend: o.Backend, From: o.From, IPv6: v6 == nil}
+	pl.Site = PortSite{Public: o.Backend, Backend: o.Backend, From: o.From, IPv6: v6 == nil, Path: o.Path}
 	if o.Public > 0 {
 		pl.Site.Public = o.Public
 	}
@@ -854,4 +859,17 @@ func verifySite(url string, backend int) {
 	default:
 		ui.Warn("no se pudo comprobar %s: %v", url, err)
 	}
+}
+
+// ValidPath comprueba una ruta para --path: empieza por / y solo lleva caracteres seguros (va dentro de nginx.conf).
+func ValidPath(p string) bool {
+	if !strings.HasPrefix(p, "/") || len(p) > 200 || strings.Contains(p, "//") || strings.Contains(p, "..") {
+		return false
+	}
+	for _, r := range p {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/-_.", r)) {
+			return false
+		}
+	}
+	return true
 }

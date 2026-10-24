@@ -1,5 +1,8 @@
 # Cambios tras la revisión de código
 
+## Nuevo: `add port N --path /ui/`
+- `/` redirige (302) a la ruta indicada de la app, para interfaces que no están en la raíz. Ruta validada (solo `a-z A-Z 0-9 / - _ .`).
+
 ## Nuevo: el puerto pedido se conserva aunque la app lo ocupe (redirección NAT)
 - Si la app escucha en `0.0.0.0:N`, `add port N` ya no muda la URL a otro número: Nginx escucha en un puerto interno libre y una
   regla `iptables` (PREROUTING, solo tráfico que no es `lo`) desvía el N de la red hacia él. Persistente con la unidad

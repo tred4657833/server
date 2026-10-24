@@ -379,3 +379,18 @@ func TestRenderRedirectUnit(t *testing.T) {
 		}
 	}
 }
+
+func TestPathRedirectAndValidation(t *testing.T) {
+	out := PortSite{Public: 1555, Backend: 1555, Binds: []string{"192.168.0.113"}, Path: "/ui/"}.Render()
+	if !strings.Contains(out, "location = / { return 302 /ui/; }") {
+		t.Fatalf("falta la redirección de la entrada:\n%s", out)
+	}
+	if strings.Contains(PortSite{Public: 1555, Backend: 1555}.Render(), "return 302") {
+		t.Fatal("sin --path no debe haber redirección")
+	}
+	for p, want := range map[string]bool{"/ui/": true, "/app/v1": true, "/": true, "ui": false, "/a b": false, "/a;b": false, "/../x": false, "//x": false, "/a\n": false} {
+		if ValidPath(p) != want {
+			t.Errorf("ValidPath(%q) != %v", p, want)
+		}
+	}
+}

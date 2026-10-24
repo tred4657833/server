@@ -60,6 +60,12 @@ propio en `conf.d` como el resto de puertos.
 
 Al terminar, `add port` pide la URL publicada y te dice si responde tu app o si algo la tapa (p. ej. la página «Welcome to nginx!»).
 
+### Apps cuya interfaz no está en la raíz
+```
+sudo tawanzu add port 1555 --path /ui/      # http://IP:1555/ redirige a http://IP:1555/ui/
+```
+Útil cuando la app (p. ej. un servidor Go que solo registra ciertas rutas) responde `404 page not found` en `/`.
+
 ### El puerto que escribes es el que usas
 `add port 1555` te deja entrar por `http://IP:1555/`. Si la app escucha solo en `127.0.0.1:1555`, Nginx usa ese mismo número en tu IP
 local. Si la app ya ocupa el 1555 en **todas** las interfaces (`0.0.0.0`), Nginx no puede escuchar ahí; en vez de mudarse a otro número,

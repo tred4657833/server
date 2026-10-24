@@ -63,7 +63,7 @@ func globalFlags(in []string) []string {
 	return out
 }
 
-var valued = map[string]bool{"port": true, "email": true, "project": true, "interval": true, "top": true, "keep": true, "from": true, "ip": true, "zone": true, "ttl": true, "provider": true, "public": true}
+var valued = map[string]bool{"port": true, "email": true, "project": true, "interval": true, "top": true, "keep": true, "from": true, "ip": true, "zone": true, "ttl": true, "provider": true, "public": true, "path": true}
 
 // parseFlags separa banderas (--k=v, --k v, --bool) de argumentos posicionales.
 func parseFlags(args []string) (map[string]string, []string) {
@@ -318,6 +318,10 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 			return fmt.Errorf("--public solo se puede usar con un puerto")
 		}
 	}
+	path := fl["path"]
+	if path != "" && !netcfg.ValidPath(path) {
+		return fmt.Errorf("--path debe empezar por / y usar solo letras, números y - _ . / (p. ej. --path /ui/)")
+	}
 	index := fl["index"] == "true"
 	if index && (len(specs) != 1 || fl["raw"] == "true") {
 		return fmt.Errorf("--index publica una sola app web en el puerto 80: tawanzu add port <n> --index")
@@ -344,7 +348,7 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 			raw = append(raw, p)
 			continue
 		}
-		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: backend, Public: pub, From: from, LAN: fl["lan"] == "true", Index: index}); err != nil {
+		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: backend, Public: pub, From: from, LAN: fl["lan"] == "true", Index: index, Path: path}); err != nil {
 			return err
 		}
 	}
@@ -657,6 +661,7 @@ HERRAMIENTAS
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso
   add port <n> --lan                 Como arriba pero SOLO para tu red local: http://192.168.x.x/ (puerto 80), sin exponerlo a Internet
+  add port <n> --path /ui/           La entrada (/) redirige a esa ruta de tu app (cuando su interfaz no está en la raíz)
   add port <n> --index               Tu app como página principal de la red local: http://192.168.x.x/ (puerto 80). Reescribe el sitio por defecto de Nginx (guarda copia del original)
   remove all                         Quita todo lo que instaló Tawanzu (Nginx, firewall, Certbot, Fail2ban, servicios) para empezar de nuevo con init
   add port <n> [--from IP] [--public P]   Publica la app del puerto n: Nginx (proxy, límites), firewall y estado, todo en uno
