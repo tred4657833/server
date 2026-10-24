@@ -58,6 +58,15 @@ y acceso limitado a tu red local, y lo habilita en `sites-enabled`. El contenido
 restaura. Si tu sitio por defecto estaba personalizado, pregunta antes; si tu sistema no usa `sites-available` (RHEL/Fedora), usa un archivo
 propio en `conf.d` como el resto de puertos.
 
+### Cuando el puerto está mal
+- Si pides `add port 1555` pero nada escucha ahí y sí en uno cercano (±10, p. ej. el 1556), `add port` te pregunta si esa es tu app y,
+  si aceptas, publica el 1555 apuntando al 1556. Con `--yes` no cambia nada solo: te dice el comando exacto.
+- Si ya publicaste un puerto que apunta a una app que no responde, `sudo tawanzu add port 1556 --public 1555` reemplaza esa publicación
+  (solo si la anterior está caída y la nueva responde).
+- `sudo tawanzu doctor` revisa cada puerto publicado: avisa si su app no responde y sugiere el comando para corregirlo.
+- Si la app no habla HTTP (base de datos, TCP propio), no se pone detrás de Nginx: se abre el puerto en el firewall. Si además la app
+  escucha solo en `127.0.0.1`, avisa de que abrir el firewall no basta: hay que hacer que escuche en `0.0.0.0` o en tu IP local.
+
 ### `remove all`
 ```
 sudo tawanzu remove all     # quita todo lo que instaló Tawanzu para empezar de nuevo con `sudo tawanzu init`

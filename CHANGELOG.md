@@ -1,5 +1,11 @@
 # Cambios tras la revisión de código
 
+## Nuevo: detección de puerto equivocado (`add port` y `doctor`)
+- `add port N`: si nada escucha en N pero sí en un puerto cercano (±10), propone usarlo como destino de Nginx y sigue publicando N.
+  Con `--yes` solo avisa. Una publicación existente cuya app está caída se reemplaza si la nueva sí responde.
+- `doctor`: nueva comprobación «Apps publicadas», con el comando sugerido para corregir.
+- Puertos TCP (no HTTP) que solo escuchan en 127.0.0.1: aviso de que el firewall no los hace accesibles.
+
 ## Nuevo: `remove all`, `add port --index` y `add port` autosuficiente
 - `tawanzu remove all`: desinstala Nginx, firewall, Certbot y Fail2ban, quita guardián, copia diaria y ajustes de Tawanzu
   (sysctl, SSH) y reinicia el estado de infraestructura para volver a empezar con `tawanzu init`. No toca proyectos, copias,

@@ -42,6 +42,39 @@ func Run(i *system.Info, st *state.State) int {
 	var checks []check
 	add := func(n string, f func() (Level, string, string)) { checks = append(checks, check{n, f}) }
 
+	add("Apps publicadas", func() (Level, string, string) {
+		if len(st.Published) == 0 {
+			return OK, "ningún puerto publicado con `add port`", ""
+		}
+		var bad []string
+		fix := ""
+		keys := make([]string, 0, len(st.Published))
+		for k := range st.Published {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			p := st.Published[k]
+			if system.PortOpen(p.Backend) {
+				continue
+			}
+			msg := fmt.Sprintf("el puerto %d reenvía a 127.0.0.1:%d, donde no escucha nada", p.Public, p.Backend)
+			if c := netcfg.NearbyApps(st, p.Backend); len(c) > 0 {
+				msg += fmt.Sprintf(" (sí escucha el %d)", c[0])
+				if fix == "" {
+					fix = fmt.Sprintf("si tu app es la del %d: sudo tawanzu add port %d --public %d", c[0], c[0], p.Public)
+				}
+			}
+			bad = append(bad, msg)
+		}
+		if len(bad) == 0 {
+			return OK, fmt.Sprintf("%d puerto(s) publicado(s), todas las apps responden", len(st.Published)), ""
+		}
+		if fix == "" {
+			fix = "arranca la app (debe escuchar en 127.0.0.1:<puerto>) o quita la publicación: sudo tawanzu remove port <publico>"
+		}
+		return Fail, strings.Join(bad, "; "), fix
+	})
 	add("Permisos", func() (Level, string, string) {
 		if i.IsRoot {
 			return OK, "ejecutando como root", ""

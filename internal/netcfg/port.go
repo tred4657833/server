@@ -282,7 +282,10 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		pubKey = 80
 	}
 	prev := st.Published[fmt.Sprint(pubKey)]
-	replace := o.Index && prev != nil && prev.Backend != o.Backend
+	// Se reemplaza la app publicada en ese puerto si se pidió --index o si la anterior ya no responde y la
+	// nueva sí (p. ej. se publicó el 1555 pero la app estaba en el 1556).
+	replace := prev != nil && prev.Backend != o.Backend &&
+		(o.Index || (!system.PortOpen(prev.Backend) && system.PortOpen(o.Backend)))
 	if prev != nil && prev.Backend != o.Backend && !replace {
 		return fmt.Errorf("el puerto público %d ya publica la app del puerto %d: quítala con `tawanzu remove port %d` o elige otro con --public", pubKey, prev.Backend, pubKey)
 	}
@@ -297,7 +300,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		return err
 	}
 	if replace {
-		ui.Info("la página principal (puerto 80) era la app del puerto %d: se reemplaza por la del %d", prev.Backend, o.Backend)
+		ui.Info("el puerto público %d apuntaba a la app del puerto %d: se reemplaza por la del %d", pubKey, prev.Backend, o.Backend)
 		if err := UnpublishPort(i, st, pubKey); err != nil {
 			return err
 		}
@@ -702,4 +705,32 @@ func (d defaultSite) restore() error {
 		_ = os.Remove(d.link)
 	}
 	return nil
+}
+
+// NearbyApps devuelve los puertos cercanos (±10) en los que sí escucha algo, sin contar los de SSH ni los que
+// Tawanzu ya publica: candidatos a ser la app cuando en `port` no hay nada (p. ej. se pidió el 1555 y está en el 1556).
+func NearbyApps(st *state.State, port int) []int {
+	skip := map[int]bool{80: true, 443: true}
+	for _, p := range system.SSHPorts() {
+		skip[p] = true
+	}
+	for _, p := range st.Published {
+		skip[p.Public], skip[p.Backend] = true, true
+	}
+	return system.NearbyListeners(port, 10, func(p int) bool { return skip[p] })
+}
+
+// LoopbackOnly dice si algo escucha en el puerto pero solo en 127.0.0.1/::1: abrir el firewall no basta
+// para llegar a ella desde la red.
+func LoopbackOnly(port int) bool {
+	addrs := system.ListenAddrs(port)
+	if len(addrs) == 0 {
+		return false
+	}
+	for _, a := range addrs {
+		if !a.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }

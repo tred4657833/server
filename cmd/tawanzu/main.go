@@ -253,6 +253,51 @@ func firstNonEmpty(v ...string) string {
 // addPorts publica puertos. Un puerto TCP normal (`add port 1555`) se publica COMPLETO: Nginx como
 // proxy con límites de concurrencia, firewall solo para el puerto público y registro en el estado.
 // UDP, rangos y `--raw` (bases de datos, juegos...) solo se abren en el firewall.
+// guessApp detecta el error típico de pedir el puerto equivocado: si en `port` no escucha nada pero sí
+// en uno muy cercano (1555 → 1556), propone usarlo. Devuelve 0 si no hay nada que corregir o el usuario
+// no acepta. Con --yes nunca cambia el puerto por su cuenta: solo avisa.
+func guessApp(st *state.State, port int) int {
+	if system.PortOpen(port) {
+		return 0
+	}
+	// Si Nginx (Tawanzu) ya publica ese puerto, lo que escucha ahí es Nginx, no la app.
+	if st.Published[strconv.Itoa(port)] == nil && len(system.ListenAddrs(port)) > 0 {
+		return 0
+	}
+	cands := netcfg.NearbyApps(st, port)
+	if len(cands) == 0 {
+		return 0
+	}
+	ui.Warn("nada escucha en el puerto %d, pero sí en: %s", port, joinInts(cands))
+	dist := func(p int) int {
+		if p > port {
+			return p - port
+		}
+		return port - p
+	}
+	if len(cands) > 1 && dist(cands[0]) == dist(cands[1]) {
+		ui.Info("si tu app es una de esas, usa: sudo tawanzu add port <puerto_de_la_app> --public %d", port)
+		return 0
+	}
+	best := cands[0]
+	if ui.AssumeYes {
+		ui.Info("si tu app es la del %d, usa: sudo tawanzu add port %d --public %d", best, best, port)
+		return 0
+	}
+	if !ui.Confirm(fmt.Sprintf("¿Tu app es la del puerto %d? (se publica el %d apuntando a ella)", best, port), true) {
+		return 0
+	}
+	return best
+}
+
+func joinInts(v []int) string {
+	s := make([]string, len(v))
+	for k, n := range v {
+		s[k] = strconv.Itoa(n)
+	}
+	return strings.Join(s, ", ")
+}
+
 func addPorts(i *system.Info, st *state.State, fl map[string]string, args []string) error {
 	specs, err := security.ParsePortSpecs(args)
 	if err != nil {
@@ -283,15 +328,23 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 			raw = append(raw, p)
 			continue
 		}
-		if system.PortOpen(p.Start) && !system.HTTPHealthy(p.Start) {
-			ui.Warn("el puerto %d está en uso pero no responde HTTP (¿base de datos, TCP crudo?)", p.Start)
+		backend, pub := p.Start, public
+		if to := guessApp(st, p.Start); to != 0 {
+			backend = to
+			if pub == 0 && !index && fl["lan"] != "true" {
+				pub = p.Start // se sigue entrando por el puerto pedido; Nginx reenvía a la app real
+			}
+			p.Start, p.End = to, to
+		}
+		if system.PortOpen(backend) && !system.HTTPHealthy(backend) {
+			ui.Warn("el puerto %d está en uso pero no responde HTTP (¿base de datos, TCP crudo?)", backend)
 			if !ui.Confirm("¿Abrirlo tal cual en el firewall, sin Nginx?", true) {
 				return fmt.Errorf("cancelado")
 			}
 			raw = append(raw, p)
 			continue
 		}
-		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: p.Start, Public: public, From: from, LAN: fl["lan"] == "true", Index: index}); err != nil {
+		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: backend, Public: pub, From: from, LAN: fl["lan"] == "true", Index: index}); err != nil {
 			return err
 		}
 	}
@@ -306,6 +359,9 @@ func openRaw(i *system.Info, st *state.State, specs []security.PortSpec, from st
 	used := st.UsedPorts()
 	for _, p := range specs {
 		for n := p.Start; n <= p.End; n++ {
+			if p.Proto == "tcp" && netcfg.LoopbackOnly(n) {
+				ui.Warn("la app del puerto %d escucha solo en 127.0.0.1: abrir el firewall no la hace accesible desde la red. Haz que escuche en 0.0.0.0 (o en tu IP local), o publícala con Nginx si habla HTTP", n)
+			}
 			if used[n] {
 				ui.Warn("el puerto %d lo usa un proyecto/dominio detrás de Nginx: abrirlo expone esa app sin pasar por Nginx", n)
 				if !ui.Confirm("¿Abrirlo de todos modos?", false) {

@@ -90,3 +90,32 @@ func TestVirtualIfaceAndLocalIPs(t *testing.T) {
 		}
 	}
 }
+
+// Se pidió el puerto N pero la app está en N+1: NearbyListeners debe encontrarla y ordenar por cercanía.
+func TestNearbyListenersFindsNeighbourApp(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("no se puede abrir un puerto local:", err)
+	}
+	defer l.Close()
+	port := l.Addr().(*net.TCPAddr).Port
+	if port < 1025 || port > 65500 {
+		t.Skip("puerto efímero fuera de rango útil")
+	}
+	got := NearbyListeners(port+1, 5, nil)
+	found := false
+	for _, p := range got {
+		if p == port {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("debía encontrar %d cerca de %d: %v", port, port+1, got)
+	}
+	if got := NearbyListeners(port, 5, nil); len(got) > 0 && got[0] == port {
+		t.Fatal("el propio puerto no debe contarse")
+	}
+	if got := NearbyListeners(port+1, 5, func(p int) bool { return p == port }); len(got) > 0 && got[0] == port {
+		t.Fatal("skip debe descartar el puerto")
+	}
+}

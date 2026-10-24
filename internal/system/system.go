@@ -2,6 +2,7 @@
 package system
 
 import (
+	"sort"
 	"bufio"
 	"io"
 	"net"
@@ -370,6 +371,36 @@ func ListeningPorts() map[int]string {
 		fh.Close()
 	}
 	return res
+}
+
+// NearbyListeners devuelve los puertos en escucha a menos de radius del dado (sin contarlo), del más
+// cercano al más lejano. skip, si no es nil, descarta los que no interesan (SSH, ya publicados...).
+// Sirve para detectar que la app está en el 1556 cuando se pidió el 1555.
+func NearbyListeners(port, radius int, skip func(int) bool) []int {
+	var out []int
+	for p := range ListeningPorts() {
+		d := p - port
+		if d < 0 {
+			d = -d
+		}
+		if d == 0 || d > radius || p < 1024 || (skip != nil && skip(p)) {
+			continue
+		}
+		out = append(out, p)
+	}
+	dist := func(p int) int {
+		if d := p - port; d >= 0 {
+			return d
+		}
+		return port - p
+	}
+	sort.Slice(out, func(a, b int) bool {
+		if da, db := dist(out[a]), dist(out[b]); da != db {
+			return da < db
+		}
+		return out[a] < out[b]
+	})
+	return out
 }
 
 // PortOpen comprueba si algo escucha en 127.0.0.1:port.
