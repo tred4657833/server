@@ -26,6 +26,7 @@ import (
 	"tawanzu/internal/state"
 	"tawanzu/internal/system"
 	"tawanzu/internal/ui"
+	"tawanzu/internal/update"
 	"tawanzu/internal/view"
 	"tawanzu/internal/work"
 )
@@ -106,6 +107,9 @@ func run(cmd string, args []string) error {
 		return nil
 	case "work":
 		return work.Main(args) // no necesita detección del sistema: arranque instantáneo
+	case "update":
+		fl, _ := parseFlags(args)
+		return update.Run(fl["keep"] == "true")
 	}
 
 	i := system.Detect()
@@ -582,6 +586,7 @@ DOMINIOS
   domain list | domain remove ejemplo.com
 
 HERRAMIENTAS
+  update [--keep]                    Descarga la última versión de GitHub, la compila (make build) e instala (make install)
   view [--local] [--public] [--web] [--json]                 IP local (privada), IP pública y dónde apunta cada dominio; avisa si cambiaron
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso

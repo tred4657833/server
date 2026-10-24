@@ -250,7 +250,8 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 	var local []string
 	var lanNets []string
-	for _, l := range system.LocalIPs() {
+	localIPs := system.LocalIPs()
+	for _, l := range localIPs {
 		if o.LAN && !net.ParseIP(l.IP).IsPrivate() {
 			continue // en modo LAN solo se escucha en IPs privadas (192.168.x, 10.x, 172.16-31.x)
 		}
@@ -358,8 +359,10 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 
 	ui.OK("puerto %d publicado", s.Public)
-	host := firstNonEmpty(i.PublicIP, firstOf(local))
-	if o.LAN {
+	// La URL que se muestra usa la IP de la red local de esta máquina (la real, detectada en el
+	// momento), nunca la IP pública de Internet.
+	host := lanHost(localIPs)
+	if host == "" {
 		host = firstOf(local)
 	}
 	if host != "" {
@@ -404,6 +407,24 @@ func UnpublishPort(i *system.Info, st *state.State, public int) error {
 	st.Unpublish(public)
 	st.Log(fmt.Sprintf("remove port %d", public))
 	return st.Save()
+}
+
+// lanHost devuelve la IP privada (192.168.x.x, 10.x.x.x, 172.16-31.x.x) de esta máquina: la principal
+// de salida si es privada; si no, la primera privada que haya. Vacío si no hay ninguna.
+func lanHost(ips []system.LocalIP) string {
+	first := ""
+	for _, l := range ips {
+		if !net.ParseIP(l.IP).IsPrivate() {
+			continue
+		}
+		if l.Primary {
+			return l.IP
+		}
+		if first == "" {
+			first = l.IP
+		}
+	}
+	return first
 }
 
 func firstOf(l []string) string {

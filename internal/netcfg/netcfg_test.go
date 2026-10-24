@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tawanzu/internal/system"
 )
 
 func TestValidDomain(t *testing.T) {
@@ -195,5 +197,23 @@ func TestPlanPortLAN(t *testing.T) {
 		if !strings.Contains(out, s) {
 			t.Errorf("falta %q", s)
 		}
+	}
+}
+
+func TestLanHostUsesPrivateIPNeverPublic(t *testing.T) {
+	ips := []system.LocalIP{
+		{Iface: "eth1", IP: "189.187.106.104"},
+		{Iface: "eth0", IP: "10.0.0.7"},
+		{Iface: "wlan0", IP: "192.168.0.113", Primary: true},
+	}
+	if got := lanHost(ips); got != "192.168.0.113" {
+		t.Fatalf("debe preferir la IP privada principal, no %q", got)
+	}
+	ips[2].Primary = false
+	if got := lanHost(ips); got != "10.0.0.7" {
+		t.Fatalf("sin principal, la primera privada: %q", got)
+	}
+	if got := lanHost([]system.LocalIP{{IP: "189.187.106.104"}}); got != "" {
+		t.Fatalf("una IP pública nunca debe devolverse: %q", got)
 	}
 }

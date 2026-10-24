@@ -1,5 +1,15 @@
 # Cambios tras la revisión de código
 
+## Cambio: `add port` muestra la IP local, no la pública
+- La URL que imprime `add port` ya no usa la IP pública de Internet (p. ej. `189.187.106.104`): usa la IP privada real
+  del equipo (192.168.x.x, 10.x.x.x o 172.16-31.x.x), detectada en el momento; la principal de salida si es privada.
+  No hay ninguna IP escrita a mano. `view --public` y `setup domain` siguen usando la IP pública, que es lo que necesita el DNS.
+
+## Nuevo: `tawanzu update`
+- Descarga el zip de GitHub (`main`), lo extrae sin permitir rutas que escapen del destino, renombra `server-main` a `server`,
+  y ejecuta `make build` y `make install`. Trabaja en `<home>/update` y lo borra al terminar (`--keep` lo conserva).
+  Probado de punta a punta contra el repositorio real.
+
 ## Nuevo: `add port` publica todo en un paso
 - `add port N` ahora configura Nginx (proxy a `127.0.0.1:N`, `limit_conn`/`limit_req` por IP con 429, keep-alive
   hacia la app, timeouts, cabeceras, bloqueo de dotfiles, 503 legible si la app no responde), abre solo el puerto

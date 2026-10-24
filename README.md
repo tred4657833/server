@@ -32,6 +32,7 @@ Compatible con Debian 13 / Ubuntu Server (apt) y, con menos pruebas, Fedora/RHEL
 | `service list` | Servicios administrados |
 | `backup create\|list\|verify\|restore\|prune` | tar.gz + sha256, retención y restauración; `--encrypt` cifra, `--db` incluye PostgreSQL |
 | `guard [--interval 30s]` | Autopiloto: reinicia servicios caídos (máx. 5/hora), limpia disco al 90 %, renueva certificados |
+| `update [--keep]` | Descarga `https://github.com/tred4657833/server/archive/refs/heads/main.zip`, lo descomprime, renombra la carpeta a `server`, ejecuta `make build` y `make install`. Necesita `make` y `go`; si la compilación falla no toca la versión instalada. `TAWANZU_UPDATE_URL` cambia el origen |
 | `work /L [ruta]` | Lista un directorio y sale |
 | `work [ruta]` | Shell interactivo (ver abajo) |
 
@@ -39,7 +40,7 @@ Opciones globales: `--dry-run` (simula y no guarda estado), `--yes`, `--verbose`
 
 ### `add port`
 ```
-sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555
+sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555 (muestra la URL con la IP de tu red local, p. ej. http://192.168.x.x/)
 sudo tawanzu add port 1555 --lan            # SOLO red local: http://192.168.x.x/ (puerto 80), nada hacia Internet
 sudo tawanzu add port 1555 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
 sudo tawanzu add port 3000 --public 8080    # Nginx escucha en 8080 y reenvía a la app en 3000
