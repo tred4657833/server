@@ -62,7 +62,7 @@ func Run(i *system.Info, st *state.State) int {
 			if c := netcfg.NearbyApps(st, p.Backend); len(c) > 0 {
 				msg += fmt.Sprintf(" (sí escucha el %d)", c[0])
 				if fix == "" {
-					fix = fmt.Sprintf("si tu app es la del %d: sudo tawanzu add port %d --public %d", c[0], c[0], p.Public)
+					fix = fmt.Sprintf("si tu app es la del %d: sudo tawanzu add port %d --as %d", c[0], c[0], p.Public)
 				}
 			}
 			bad = append(bad, msg)

@@ -45,7 +45,7 @@ type PortSite struct {
 	Binds []string
 	From  string // IP/CIDR permitida ("" = cualquiera)
 	IPv6  bool   // escuchar también en [::]: solo si el sistema tiene IPv6 (si no, nginx no arranca)
-	Path    string // redirige "/" a esta ruta
+	Path  string // redirige "/" a esta ruta
 	// Default marca el server como default_server: --index lo escribe en el sitio por defecto de Nginx.
 	Default bool
 }
@@ -83,22 +83,24 @@ func (p PortSite) Render() string {
 		}
 		b.WriteString("    allow 127.0.0.1;\n    deny all;\n\n")
 	}
-	b.WriteString(`    # Concurrencia y protección frente a abusos
+	// Proxy transparente: lo que responde la app es lo que ve el visitante (HTML, JSON, texto plano,
+	// streams, WebSockets...). Nginx solo añade protección contra abusos y no toca cabeceras ni cuerpo.
+	b.WriteString(`    # Protección frente a abusos (no altera las respuestas de la app)
     limit_conn tawanzu_conn 40;
-    limit_req zone=tawanzu_req burst=60 nodelay;
+    limit_req zone=tawanzu_req burst=200 nodelay;
     limit_conn_status 429;
     limit_req_status 429;
     client_header_timeout 15s;
-    client_body_timeout 30s;
-    send_timeout 30s;
+    client_body_timeout 60s;
+    send_timeout 60s;
     keepalive_timeout 30s;
     reset_timedout_connection on;
 
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    # Sin límite de subida propio: manda el de la app (por defecto Nginx cortaría en 1 MB)
+    client_max_body_size 0;
 
-    location ~ /\.(?!well-known) { deny all; }
+    # Solo secretos que ninguna app sirve a propósito
+    location ~ ^/\.(git|svn|hg|env)(/|$) { return 404; }
 
 `)
 	if p.Path != "" && p.Path != "/" {
@@ -107,21 +109,22 @@ func (p PortSite) Render() string {
 	fmt.Fprintf(&b, `    location / {
         proxy_pass http://%s;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $tawanzu_connection;
-        proxy_hide_header X-Powered-By;
+        proxy_redirect off;
         proxy_connect_timeout 5s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 90s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 300s;
         proxy_next_upstream error timeout;
         proxy_next_upstream_tries 2;
         error_page 502 503 504 = @tawanzu_down;
     }
 
+    # Solo cuando la app no está (Nginx no puede conectar); si la app responde 5xx, se ve su respuesta
     location @tawanzu_down {
         default_type text/plain;
         return 503 "La aplicacion no responde en 127.0.0.1:%d\n";
@@ -180,8 +183,8 @@ type PortOptions struct {
 // PortPlan es el resultado de decidir cómo publicar un puerto.
 type PortPlan struct {
 	Site    PortSite
-	Running bool   // algo escucha ya en el puerto de la app
-	Moved   bool   // se eligió otro puerto público porque la app ocupa el suyo en todas las interfaces
+	Running bool // algo escucha ya en el puerto de la app
+	Moved   bool // se eligió otro puerto público porque la app ocupa el suyo en todas las interfaces
 	// Redirect > 0: Nginx escucha en Site.Public (interno) y una regla NAT desvía a él el puerto Redirect de la red.
 	Redirect int
 	Note     string // aviso para mostrar al usuario
@@ -243,7 +246,7 @@ func PlanPort(o PortOptions, listening func(int) []net.IP, localIPs []string, bu
 	}
 	if pl.Site.Public == pl.Site.Backend || o.LAN {
 		if len(localIPs) == 0 {
-			return pl, fmt.Errorf("no se encontró ninguna IP local donde escuchar; usa --public <otro puerto>")
+			return pl, fmt.Errorf("no se encontró ninguna IP local donde escuchar; usa --as <otro puerto>")
 		}
 		pl.Site.Binds = localIPs
 	}
@@ -272,7 +275,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 	if o.Index {
 		if o.Public != 0 && o.Public != 80 {
-			return fmt.Errorf("--index publica en el puerto 80; quita --public %d o usa uno de los dos", o.Public)
+			return fmt.Errorf("--index publica en el puerto 80; quita --as %d o usa uno de los dos", o.Public)
 		}
 		o.Public, o.LAN = 80, true
 	}
@@ -305,7 +308,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	replace := prev != nil && prev.Backend != o.Backend &&
 		(o.Index || (!system.PortOpen(prev.Backend) && system.PortOpen(o.Backend)))
 	if prev != nil && prev.Backend != o.Backend && !replace {
-		return fmt.Errorf("el puerto público %d ya publica la app del puerto %d: quítala con `tawanzu remove port %d` o elige otro con --public", pubKey, prev.Backend, pubKey)
+		return fmt.Errorf("el puerto público %d ya publica la app del puerto %d: quítala con `tawanzu remove port %d` o elige otro con --as", pubKey, prev.Backend, pubKey)
 	}
 	ours := prev != nil && !replace
 	o.CanRedirect = CanRedirect(i)
@@ -438,7 +441,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 			undo()
 			runner.Restore(portInfraPath, infraBak)
 			_ = services.Reload("nginx")
-			return fmt.Errorf("%w\n(alternativa: tawanzu add port %d --public <otro puerto>)", err, o.Backend)
+			return fmt.Errorf("%w\n(alternativa: tawanzu add port %d --as <otro puerto>)", err, o.Backend)
 		}
 	}
 	if asDefault {
@@ -636,6 +639,18 @@ func fromList(f string) []string {
 		return l
 	}
 	return []string{""}
+}
+
+// LANSources devuelve las redes locales de este servidor (p. ej. "192.168.0.0/24") separadas por coma,
+// o "" si no tiene IP privada. Es lo que admite el firewall en modo --private.
+func LANSources() string {
+	var priv []string
+	for _, l := range system.LocalIPs() {
+		if net.ParseIP(l.IP).IsPrivate() {
+			priv = append(priv, l.IP)
+		}
+	}
+	return strings.Join(lanCIDRs(priv), ",")
 }
 
 // lanCIDRs devuelve la red (CIDR) de cada IP local dada, p. ej. 192.168.0.113 → 192.168.0.0/24.

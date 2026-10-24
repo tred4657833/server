@@ -394,3 +394,23 @@ func TestPathRedirectAndValidation(t *testing.T) {
 		}
 	}
 }
+
+// El proxy de `add port` no debe alterar lo que sirve la app: sin cabeceras inyectadas, Host con
+// puerto, subidas sin el límite de 1 MB y sin ocultar cabeceras de la app.
+func TestRenderPortTransparent(t *testing.T) {
+	out := PortSite{Public: 3000, Backend: 3000, Binds: []string{"10.0.0.5"}}.Render()
+	for _, s := range []string{"proxy_set_header Host $http_host;", "client_max_body_size 0;", "proxy_redirect off;"} {
+		if !strings.Contains(out, s) {
+			t.Errorf("falta %q en:\n%s", s, out)
+		}
+	}
+	for _, s := range []string{"add_header", "proxy_hide_header", "proxy_intercept_errors", "return 302", "$host;"} {
+		if strings.Contains(out, s) {
+			t.Errorf("el proxy no debe contener %q:\n%s", s, out)
+		}
+	}
+	// Los secretos típicos siguen bloqueados, pero /.well-known y otras rutas con punto pasan a la app.
+	if !strings.Contains(out, "(git|svn|hg|env)") || strings.Contains(out, "deny all;\n\n    # Solo") {
+		t.Errorf("bloqueo de secretos mal formado:\n%s", out)
+	}
+}

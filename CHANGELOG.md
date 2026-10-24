@@ -1,5 +1,15 @@
 # Cambios tras la revisión de código
 
+## Cambio: `add port` ahora es mínimo y transparente
+- **Sintaxis:** `tawanzu add port 3000 [--public|--private]`. `--public` (por defecto) = Internet y red local; `--private` = solo tu
+  red local, con el mismo número de puerto. El puerto alternativo pasa de `--public N` a `--as N` (`--public N` sigue funcionando).
+- **Proxy transparente:** se muestra lo que sirve la app, sea HTML, JSON o texto plano. Ya no se inyectan `X-Frame-Options`,
+  `X-Content-Type-Options` ni `Referrer-Policy`, ni se oculta `X-Powered-By`; `Host` conserva el puerto, `proxy_redirect off`,
+  subidas sin el límite de 1 MB de Nginx, timeouts más largos y ráfaga de 200 peticiones. Siguen: límites por IP (429),
+  firewall solo del puerto público y bloqueo de `/.git`, `/.svn`, `/.hg` y `/.env`.
+- **Sin preguntas:** ya no se adivina otro puerto cercano ni se pregunta si abrir un puerto que no habla HTTP: se avisa y se abre
+  como TCP (en `--private`, solo para la red local). `--private` falla si el servidor no tiene IP local, en vez de abrir a Internet.
+
 ## Nuevo: `add port N --path /ui/`
 - `/` redirige (302) a la ruta indicada de la app, para interfaces que no están en la raíz. Ruta validada (solo `a-z A-Z 0-9 / - _ .`).
 

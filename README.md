@@ -26,7 +26,7 @@ Compatible con Debian 13 / Ubuntu Server (apt) y, con menos pruebas, Fedora/RHEL
 | `view [--local] [--public] [--web] [--json]` | `--local`: IP privada (marca la principal de salida); `--public`: IP pública; `--web`: cada dominio del servidor, qué IP resuelve hoy (DNS público, sin caché local) y si apunta aquí. Sin banderas muestra las tres. Siempre consulta en el momento y **avisa si la IP cambió** desde la última vez (y si un dominio sigue apuntando a la IP anterior) |
 | `add dns <host> [--ip IP] [--provider p] [--zone z] [--ttl N]` | Crea/actualiza el registro **A** de cualquier dominio. Detecta el proveedor por los servidores de nombres (Cloudflare, DigitalOcean, GoDaddy, Hostinger) o usa `--provider`; con `TAWANZU_DNS_CMD` ejecuta tu propio comando para cualquier otro. Sin proveedor reconocido, te dice qué registro crear a mano |
 | `setup domain <host> --port N [--ip IP] [--provider p] [--no-dns]` | Todo en uno: DNS + Nginx (proxy a `127.0.0.1:N`) + HTTPS. **No abre N en el firewall**: la app sigue privada y se publica por 80/443 |
-| `add port <n> [--from IP] [--public P]` | **Todo en uno**: Nginx como proxy a `127.0.0.1:n` (límites de conexiones y peticiones, keep-alive, timeouts, cabeceras), firewall solo para el puerto público, desactiva la página "Welcome to nginx!" y lo registra. Con `--raw`, UDP, rangos (`8000-8010`) o listas, solo abre el firewall |
+| `add port <n> [--public\|--private] [--from IP] [--as P]` | Publica **exactamente** lo que sirve tu app en `127.0.0.1:n` (web, API o texto; sin HTML propio). `--public` (por defecto): Internet y red local; `--private`: solo tu red local. Nginx como proxy transparente con límites contra abusos, firewall solo para el puerto público y registro. Si el puerto no habla HTTP, o con `--raw`, UDP o rangos, solo abre el firewall |
 | `remove port <público>` | Deja de publicarlo (Nginx + firewall) |
 | `add php\|node\|go\|python\|docker\|redis\|database:postgres\|database:mysql\|database:caimandb` | Instala bajo demanda, ajustado a los recursos (`add --list`) |
 | `service list` | Servicios administrados |
@@ -40,15 +40,30 @@ Opciones globales: `--dry-run` (simula y no guarda estado), `--yes`, `--verbose`
 
 ### `add port`
 ```
-sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555 (muestra la URL con la IP de tu red local, p. ej. http://192.168.x.x/)
-sudo tawanzu add port 1555 --index          # tu app como página principal de la red local: http://192.168.x.x/ (puerto 80); reescribe el sitio por defecto de Nginx
-sudo tawanzu add port 1555 --lan            # SOLO red local: http://192.168.x.x/ (puerto 80), nada hacia Internet
-sudo tawanzu add port 1555 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
-sudo tawanzu add port 3000 --public 8080    # Nginx escucha en 8080 y reenvía a la app en 3000
+sudo tawanzu add port 3000                  # público (por defecto): http://IP:3000/ muestra tu app tal cual
+sudo tawanzu add port 3000 --private        # solo tu red local: http://192.168.x.x:3000/
+sudo tawanzu add port 1555 --public         # igual que sin bandera
+sudo tawanzu remove port 3000               # deshacer
+```
+Opciones avanzadas (casi nunca hacen falta):
+```
+sudo tawanzu add port 3000 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
+sudo tawanzu add port 3000 --as 8080        # entrar por el 8080 en vez del 3000
+sudo tawanzu add port 1555 --index          # tu app como página principal de la red local (puerto 80); reescribe el sitio por defecto de Nginx
+sudo tawanzu add port 1555 --lan            # solo red local, en el puerto 80
+sudo tawanzu add port 1555 --path /ui/      # http://IP:1555/ redirige a http://IP:1555/ui/
 sudo tawanzu add port 5432 --raw            # solo firewall, sin Nginx (bases de datos, TCP crudo)
 sudo tawanzu add port 8080/udp 8000-8010    # UDP y rangos: solo firewall
-sudo tawanzu remove port 1555               # deshacer
 ```
+
+**Es un proxy transparente.** No subes ni creas nada: Tawanzu solo conecta el puerto con la app y lo que ella responde es lo que se ve
+(una página de Node en el 3000, tu motor en el 1555, texto plano, JSON, WebSockets, subidas grandes). Nginx no añade cabeceras de
+seguridad ni cambia el contenido; solo protege con límites por IP (40 conexiones, `429` al abusar), firewall únicamente del puerto
+público (la app sigue en `127.0.0.1`) y bloqueo de `/.git`, `/.svn`, `/.hg` y `/.env`. Si la app está caída verás
+`La aplicacion no responde en 127.0.0.1:N`; si la app responde un error propio (404, 500...), ves el suyo.
+
+**Puertos que no hablan HTTP** (bases de datos, un motor con protocolo propio): se abren tal cual en el firewall, sin Nginx y sin
+preguntas; con `--private`, solo para tu red local. Si la app escucha solo en `127.0.0.1`, avisa de que hace falta que escuche en `0.0.0.0`.
 
 `add port` no necesita `init` previo: si falta Nginx o el firewall, los instala y los arranca, y al terminar muestra la URL lista
 con la IP de tu red local (`http://192.168.x.x:1555/`, o `http://192.168.x.x/` con `--index`).
@@ -74,12 +89,12 @@ de la red al 1555. Tu app no se toca ni se mueve, y Nginx la sigue alcanzando po
 sistema no tiene systemd o `iptables`, mantiene el comportamiento anterior (publicar en otro puerto y avisar). Solo IPv4.
 
 ### Cuando el puerto está mal
-- Si pides `add port 1555` pero nada escucha ahí y sí en uno cercano (±10, p. ej. el 1556), `add port` te pregunta si esa es tu app y,
-  si aceptas, publica el 1555 apuntando al 1556. Con `--yes` no cambia nada solo: te dice el comando exacto.
-- Si ya publicaste un puerto que apunta a una app que no responde, `sudo tawanzu add port 1556 --public 1555` reemplaza esa publicación
+- Si pides `add port 1555` pero nada escucha ahí y sí en uno cercano (±10, p. ej. el 1556), `add port` te avisa y te da el comando
+  (`sudo tawanzu add port 1556 --as 1555`). Nunca cambia el puerto por su cuenta ni pregunta.
+- Si ya publicaste un puerto que apunta a una app que no responde, `sudo tawanzu add port 1556 --as 1555` reemplaza esa publicación
   (solo si la anterior está caída y la nueva responde).
 - `sudo tawanzu doctor` revisa cada puerto publicado: avisa si su app no responde y sugiere el comando para corregirlo.
-- Si la app no habla HTTP (base de datos, TCP propio), no se pone detrás de Nginx: se abre el puerto en el firewall. Si además la app
+- Si la app no habla HTTP (base de datos, TCP propio), no se pone detrás de Nginx: se abre el puerto en el firewall, sin preguntar. Si además la app
   escucha solo en `127.0.0.1`, avisa de que abrir el firewall no basta: hay que hacer que escuche en `0.0.0.0` o en tu IP local.
 
 ### `remove all`
@@ -92,9 +107,9 @@ proyectos y sus servicios, las copias de seguridad, los certificados de `/etc/le
 actualizaciones automáticas. Pide confirmación (`--yes` la omite) y admite `--dry-run` para ver qué haría.
 Un solo comando deja listo: proxy de Nginx, límites por IP (40 conexiones simultáneas, `tawanzu_req` por segundo con ráfaga de 60; responde 429), keep-alive hacia la app, timeouts contra conexiones lentas, bloqueo de dotfiles (`/.env`, `/.git`), cabeceras de seguridad, `X-Forwarded-For` sin falsificar, firewall (solo el puerto público) y registro en `state.json`. Si Nginx no pasa `nginx -t` o no recarga, se restaura la configuración anterior.
 
-**`--lan`.** Nginx escucha únicamente en las IPs privadas del servidor (192.168.x, 10.x, 172.16-31.x) en el puerto 80 (o el de `--public`), el firewall solo admite la red local (la `/24` de cada interfaz, o lo que pongas en `--from`) y la app sigue en su puerto privado. Dos apps no pueden usar el 80: la segunda debe llevar otro `--public`.
+**`--lan`.** Nginx escucha únicamente en las IPs privadas del servidor (192.168.x, 10.x, 172.16-31.x) en el puerto 80 (o el de `--as`), el firewall solo admite la red local (la `/24` de cada interfaz, o lo que pongas en `--from`) y la app sigue en su puerto privado. Dos apps no pueden usar el 80: la segunda debe llevar otro `--as`.
 
-**Cómo escucha cada cosa.** Tu app debe escuchar en `127.0.0.1:N`. Nginx escucha en las IPs de la máquina en el mismo número (no chocan: un bind a una IP concreta convive con otro a `127.0.0.1`). Si tu app ya escucha en `0.0.0.0:N` (típico de `app.listen(3000)`), Nginx no puede ocupar el mismo puerto: elige el siguiente libre (o `--public`), deja N cerrado en el firewall y te lo explica. Si nada escucha todavía, configura igual y Nginx responde 503 hasta que arranque la app. Si el puerto está en uso pero no habla HTTP, ofrece abrirlo tal cual.
+**Cómo escucha cada cosa.** Tu app debe escuchar en `127.0.0.1:N`. Nginx escucha en las IPs de la máquina en el mismo número (no chocan: un bind a una IP concreta convive con otro a `127.0.0.1`). Si tu app ya escucha en `0.0.0.0:N` (típico de `app.listen(3000)`), Nginx no puede ocupar el mismo puerto: elige el siguiente libre (o `--as`), deja N cerrado en el firewall y te lo explica. Si nada escucha todavía, configura igual y Nginx responde 503 hasta que arranque la app. Si el puerto está en uso pero no habla HTTP, lo abre tal cual en el firewall.
 
 Es HTTP sin cifrar: para HTTPS usa un dominio (`setup domain`). Necesita el firewall instalado (`tawanzu init`, que deja SSH permitido). Los puertos 80/443 y SSH se rechazan. Prueba antes con `--dry-run`.
 

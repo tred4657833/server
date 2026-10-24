@@ -63,7 +63,7 @@ func globalFlags(in []string) []string {
 	return out
 }
 
-var valued = map[string]bool{"port": true, "email": true, "project": true, "interval": true, "top": true, "keep": true, "from": true, "ip": true, "zone": true, "ttl": true, "provider": true, "public": true, "path": true}
+var valued = map[string]bool{"port": true, "email": true, "project": true, "interval": true, "top": true, "keep": true, "from": true, "ip": true, "zone": true, "ttl": true, "provider": true, "as": true, "path": true}
 
 // parseFlags separa banderas (--k=v, --k v, --bool) de argumentos posicionales.
 func parseFlags(args []string) (map[string]string, []string) {
@@ -85,9 +85,20 @@ func parseFlags(args []string) (map[string]string, []string) {
 			k++
 			continue
 		}
+		// Compatibilidad: `--public 8080` (puerto) sigue funcionando; `--public` solo es el modo.
+		if key == "public" && k+1 < len(args) && isPortNumber(args[k+1]) {
+			fl[key] = args[k+1]
+			k++
+			continue
+		}
 		fl[key] = "true"
 	}
 	return fl, rest
+}
+
+func isPortNumber(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == s
 }
 
 func needRoot(i *system.Info) error {
@@ -253,41 +264,21 @@ func firstNonEmpty(v ...string) string {
 // addPorts publica puertos. Un puerto TCP normal (`add port 1555`) se publica COMPLETO: Nginx como
 // proxy con límites de concurrencia, firewall solo para el puerto público y registro en el estado.
 // UDP, rangos y `--raw` (bases de datos, juegos...) solo se abren en el firewall.
-// guessApp detecta el error típico de pedir el puerto equivocado: si en `port` no escucha nada pero sí
-// en uno muy cercano (1555 → 1556), propone usarlo. Devuelve 0 si no hay nada que corregir o el usuario
-// no acepta. Con --yes nunca cambia el puerto por su cuenta: solo avisa.
-func guessApp(st *state.State, port int) int {
+// hintApp avisa del error típico de pedir el puerto equivocado: si en `port` no escucha nada pero sí
+// en uno muy cercano (1555 → 1556), lo dice. Nunca cambia el puerto por su cuenta ni hace preguntas:
+// se publica exactamente el puerto que se pidió.
+func hintApp(st *state.State, port int) {
 	if system.PortOpen(port) {
-		return 0
+		return
 	}
 	// Si Nginx (Tawanzu) ya publica ese puerto, lo que escucha ahí es Nginx, no la app.
 	if st.Published[strconv.Itoa(port)] == nil && len(system.ListenAddrs(port)) > 0 {
-		return 0
+		return
 	}
-	cands := netcfg.NearbyApps(st, port)
-	if len(cands) == 0 {
-		return 0
+	if cands := netcfg.NearbyApps(st, port); len(cands) > 0 {
+		ui.Warn("nada escucha en el puerto %d, pero sí en: %s", port, joinInts(cands))
+		ui.Info("si tu app es una de esas, usa: sudo tawanzu add port <puerto_de_la_app> --as %d", port)
 	}
-	ui.Warn("nada escucha en el puerto %d, pero sí en: %s", port, joinInts(cands))
-	dist := func(p int) int {
-		if p > port {
-			return p - port
-		}
-		return port - p
-	}
-	if len(cands) > 1 && dist(cands[0]) == dist(cands[1]) {
-		ui.Info("si tu app es una de esas, usa: sudo tawanzu add port <puerto_de_la_app> --public %d", port)
-		return 0
-	}
-	best := cands[0]
-	if ui.AssumeYes {
-		ui.Info("si tu app es la del %d, usa: sudo tawanzu add port %d --public %d", best, best, port)
-		return 0
-	}
-	if !ui.Confirm(fmt.Sprintf("¿Tu app es la del puerto %d? (se publica el %d apuntando a ella)", best, port), true) {
-		return 0
-	}
-	return best
 }
 
 func joinInts(v []int) string {
@@ -303,19 +294,29 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 	if err != nil {
 		return err
 	}
+	// Modo de acceso: --public (por defecto) = Internet y red local; --private = solo tu red local.
+	private := fl["private"] == "true"
+	if private && fl["public"] == "true" {
+		return fmt.Errorf("elige --public o --private, no los dos")
+	}
 	from := fl["from"]
 	for _, f := range strings.Split(from, ",") {
 		if f = strings.TrimSpace(f); f != "" && !security.ValidSource(f) {
 			return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", f)
 		}
 	}
-	public := 0
-	if fl["public"] != "" {
-		if public, err = strconv.Atoi(fl["public"]); err != nil || public < 1 || public > 65535 {
-			return fmt.Errorf("--public debe ser un puerto entre 1 y 65535")
+	// --as N: publicar con otro número. Antes era `--public N`; ese uso sigue funcionando.
+	as := 0
+	asStr := fl["as"]
+	if asStr == "" && isPortNumber(fl["public"]) {
+		asStr = fl["public"] // uso heredado: --public 8080
+	}
+	if asStr != "" {
+		if as, err = strconv.Atoi(asStr); err != nil || as < 1 || as > 65535 {
+			return fmt.Errorf("--as debe ser un puerto entre 1 y 65535")
 		}
 		if len(specs) != 1 {
-			return fmt.Errorf("--public solo se puede usar con un puerto")
+			return fmt.Errorf("--as solo se puede usar con un puerto")
 		}
 	}
 	path := fl["path"]
@@ -326,29 +327,31 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 	if index && (len(specs) != 1 || fl["raw"] == "true") {
 		return fmt.Errorf("--index publica una sola app web en el puerto 80: tawanzu add port <n> --index")
 	}
+	lan := private || fl["lan"] == "true"
+	if private && from == "" {
+		from = netcfg.LANSources() // privado = solo la red local, también para puertos sin HTTP
+		if from == "" {
+			return fmt.Errorf("--private necesita una IP de red local (192.168.x.x, 10.x.x.x...) y este servidor no tiene ninguna; usa --from <ip> o --public")
+		}
+	}
 	var raw []security.PortSpec
 	for _, p := range specs {
 		if fl["raw"] == "true" || p.Proto != "tcp" || p.End != p.Start {
 			raw = append(raw, p)
 			continue
 		}
-		backend, pub := p.Start, public
-		if to := guessApp(st, p.Start); to != 0 {
-			backend = to
-			if pub == 0 && !index && fl["lan"] != "true" {
-				pub = p.Start // se sigue entrando por el puerto pedido; Nginx reenvía a la app real
-			}
-			p.Start, p.End = to, to
+		backend, pub := p.Start, as
+		hintApp(st, backend)
+		if private && pub == 0 && !index {
+			pub = backend // privado: mismo número que la app, pero solo para la red local
 		}
 		if system.PortOpen(backend) && !system.HTTPHealthy(backend) {
-			ui.Warn("el puerto %d está en uso pero no responde HTTP (¿base de datos, TCP crudo?)", backend)
-			if !ui.Confirm("¿Abrirlo tal cual en el firewall, sin Nginx?", true) {
-				return fmt.Errorf("cancelado")
-			}
+			// No habla HTTP (base de datos, motor con protocolo propio...): se abre tal cual, sin Nginx.
+			ui.Info("el puerto %d no responde HTTP: se publica tal cual (TCP), sin Nginx", backend)
 			raw = append(raw, p)
 			continue
 		}
-		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: backend, Public: pub, From: from, LAN: fl["lan"] == "true", Index: index, Path: path}); err != nil {
+		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: backend, Public: pub, From: fl["from"], LAN: lan, Index: index, Path: path}); err != nil {
 			return err
 		}
 	}
@@ -660,11 +663,12 @@ HERRAMIENTAS
   view [--local] [--public] [--web] [--json]                 IP local (privada), IP pública y dónde apunta cada dominio; avisa si cambiaron
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso
-  add port <n> --lan                 Como arriba pero SOLO para tu red local: http://192.168.x.x/ (puerto 80), sin exponerlo a Internet
+  add port <n> [--public|--private]  Publica EXACTAMENTE lo que sirve tu app en el puerto n (web, API, texto...). --public (por defecto): Internet y red local; --private: solo tu red local
+  add port <n> --lan                 Solo red local en el puerto 80: http://192.168.x.x/ (sin exponerlo a Internet)
   add port <n> --path /ui/           La entrada (/) redirige a esa ruta de tu app (cuando su interfaz no está en la raíz)
   add port <n> --index               Tu app como página principal de la red local: http://192.168.x.x/ (puerto 80). Reescribe el sitio por defecto de Nginx (guarda copia del original)
   remove all                         Quita todo lo que instaló Tawanzu (Nginx, firewall, Certbot, Fail2ban, servicios) para empezar de nuevo con init
-  add port <n> [--from IP] [--public P]   Publica la app del puerto n: Nginx (proxy, límites), firewall y estado, todo en uno
+  add port <n> [--from IP] [--as P]  Opciones: limitar a una IP, o publicar con otro número (P)
   add port <n...> --raw              Solo firewall, sin Nginx (UDP, rangos 8000-8010, bases de datos)
   remove port <puerto_publico>       Deja de publicarlo (Nginx + firewall)
   add <módulo...> | add --list       php, node, go, python, docker, redis, database:postgres, database:mysql, database:caimandb...
