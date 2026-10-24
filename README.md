@@ -26,7 +26,8 @@ Compatible con Debian 13 / Ubuntu Server (apt) y, con menos pruebas, Fedora/RHEL
 | `view [--local] [--public] [--web] [--json]` | `--local`: IP privada (marca la principal de salida); `--public`: IP pública; `--web`: cada dominio del servidor, qué IP resuelve hoy (DNS público, sin caché local) y si apunta aquí. Sin banderas muestra las tres. Siempre consulta en el momento y **avisa si la IP cambió** desde la última vez (y si un dominio sigue apuntando a la IP anterior) |
 | `add dns <host> [--ip IP] [--provider p] [--zone z] [--ttl N]` | Crea/actualiza el registro **A** de cualquier dominio. Detecta el proveedor por los servidores de nombres (Cloudflare, DigitalOcean, GoDaddy, Hostinger) o usa `--provider`; con `TAWANZU_DNS_CMD` ejecuta tu propio comando para cualquier otro. Sin proveedor reconocido, te dice qué registro crear a mano |
 | `setup domain <host> --port N [--ip IP] [--provider p] [--no-dns]` | Todo en uno: DNS + Nginx (proxy a `127.0.0.1:N`) + HTTPS. **No abre N en el firewall**: la app sigue privada y se publica por 80/443 |
-| `add port <n...> [--from IP]` | Abre uno o varios puertos en el firewall (ufw/firewalld) y los registra. Acepta `1555`, `8080/udp`, rangos `8000-8010` y listas `80,443`; `--from` limita a una IP o CIDR |
+| `add port <n> [--from IP] [--public P]` | **Todo en uno**: Nginx como proxy a `127.0.0.1:n` (límites de conexiones y peticiones, keep-alive, timeouts, cabeceras), firewall solo para el puerto público, desactiva la página "Welcome to nginx!" y lo registra. Con `--raw`, UDP, rangos (`8000-8010`) o listas, solo abre el firewall |
+| `remove port <público>` | Deja de publicarlo (Nginx + firewall) |
 | `add php\|node\|go\|python\|docker\|redis\|database:postgres\|database:mysql\|database:caimandb` | Instala bajo demanda, ajustado a los recursos (`add --list`) |
 | `service list` | Servicios administrados |
 | `backup create\|list\|verify\|restore\|prune` | tar.gz + sha256, retención y restauración; `--encrypt` cifra, `--db` incluye PostgreSQL |
@@ -38,11 +39,18 @@ Opciones globales: `--dry-run` (simula y no guarda estado), `--yes`, `--verbose`
 
 ### `add port`
 ```
-sudo tawanzu add port 1555                      # un puerto (tcp)
-sudo tawanzu add port 1555 8080/udp 8000-8010   # varios, con protocolo o rango
-sudo tawanzu add port 1555 --from 10.0.0.5      # solo desde otro servidor
+sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555
+sudo tawanzu add port 1555 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
+sudo tawanzu add port 3000 --public 8080    # Nginx escucha en 8080 y reenvía a la app en 3000
+sudo tawanzu add port 5432 --raw            # solo firewall, sin Nginx (bases de datos, TCP crudo)
+sudo tawanzu add port 8080/udp 8000-8010    # UDP y rangos: solo firewall
+sudo tawanzu remove port 1555               # deshacer
 ```
-Necesita el firewall instalado (`tawanzu init` lo deja con SSH permitido). Avisa si el puerto lo usa un proyecto detrás de Nginx. Prueba antes con `--dry-run`.
+Un solo comando deja listo: proxy de Nginx, límites por IP (40 conexiones simultáneas, `tawanzu_req` por segundo con ráfaga de 60; responde 429), keep-alive hacia la app, timeouts contra conexiones lentas, bloqueo de dotfiles (`/.env`, `/.git`), cabeceras de seguridad, `X-Forwarded-For` sin falsificar, firewall (solo el puerto público) y registro en `state.json`. Si Nginx no pasa `nginx -t` o no recarga, se restaura la configuración anterior.
+
+**Cómo escucha cada cosa.** Tu app debe escuchar en `127.0.0.1:N`. Nginx escucha en las IPs de la máquina en el mismo número (no chocan: un bind a una IP concreta convive con otro a `127.0.0.1`). Si tu app ya escucha en `0.0.0.0:N` (típico de `app.listen(3000)`), Nginx no puede ocupar el mismo puerto: elige el siguiente libre (o `--public`), deja N cerrado en el firewall y te lo explica. Si nada escucha todavía, configura igual y Nginx responde 503 hasta que arranque la app. Si el puerto está en uso pero no habla HTTP, ofrece abrirlo tal cual.
+
+Es HTTP sin cifrar: para HTTPS usa un dominio (`setup domain`). Necesita el firewall instalado (`tawanzu init`, que deja SSH permitido). Los puertos 80/443 y SSH se rechazan. Prueba antes con `--dry-run`.
 
 ### DNS: proveedores y tokens
 | Proveedor | Token (variable o `<home>/<proveedor>.token`, 0600) |

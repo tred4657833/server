@@ -47,6 +47,12 @@ func InstallNginx(i *system.Info, t tune.Tuning) error {
 		runner.Restore(confPath, bak)
 		return fmt.Errorf("la configuración de Nginx no es válida, se revirtió: %w", err)
 	}
+	// El sitio por defecto ("Welcome to nginx!") atiende cualquier Host desconocido, p. ej. entrar por la IP.
+	if off, err := DisableDefaultSite(); err != nil {
+		ui.Warn("no se pudo desactivar la página por defecto de Nginx: %v", err)
+	} else if off {
+		ui.OK("página \"Welcome to nginx!\" desactivada")
+	}
 	return services.Enable("nginx")
 }
 

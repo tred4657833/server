@@ -113,3 +113,32 @@ func TestLastIPsPersistAndMerge(t *testing.T) {
 		t.Errorf("la fusión debe conservar ambos cambios: %v", got)
 	}
 }
+
+func TestPublishedMergeAndUsedPorts(t *testing.T) {
+	t.Setenv("TAWANZU_HOME", t.TempDir())
+	a, b := Load(), Load()
+	a.Publish(Published{Public: 1555, Backend: 1555})
+	b.Publish(Published{Public: 3001, Backend: 3000})
+	if err := a.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Save(); err != nil {
+		t.Fatal(err)
+	}
+	c := Load()
+	if len(c.Published) != 2 {
+		t.Fatalf("la fusión perdió puertos publicados: %v", c.Published)
+	}
+	if u := c.UsedPorts(); !u[1555] || !u[3000] {
+		t.Errorf("UsedPorts debe incluir los puertos de las apps publicadas: %v", u)
+	}
+	if p := c.Unpublish(1555); p == nil || p.Backend != 1555 {
+		t.Fatalf("Unpublish: %v", p)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if d := Load(); len(d.Published) != 1 || d.Published["3001"] == nil {
+		t.Errorf("el borrado no se guardó: %v", d.Published)
+	}
+}

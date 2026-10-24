@@ -37,14 +37,24 @@ type Domain struct {
 	Email   string `json:"email,omitempty"`
 }
 
+// Published es un puerto publicado con `tawanzu add port`: Nginx escucha en Public y reenvía a
+// 127.0.0.1:Backend. La clave del mapa es el puerto público en texto.
+type Published struct {
+	Public  int       `json:"public"`
+	Backend int       `json:"backend"`
+	From    string    `json:"from,omitempty"`
+	Created time.Time `json:"created"`
+}
+
 type State struct {
-	Profile   string              `json:"profile,omitempty"`
-	Installed []string            `json:"installed"`
-	Projects  map[string]*Project `json:"projects"`
-	Domains   map[string]*Domain  `json:"domains"`
-	LastIPs   map[string]string   `json:"last_ips,omitempty"` // última IP local/pública vista por `tawanzu view`
-	Ports     []string            `json:"ports,omitempty"`    // puertos abiertos con `tawanzu add port`
-	History   []string            `json:"history"`
+	Profile   string                `json:"profile,omitempty"`
+	Installed []string              `json:"installed"`
+	Projects  map[string]*Project   `json:"projects"`
+	Domains   map[string]*Domain    `json:"domains"`
+	LastIPs   map[string]string     `json:"last_ips,omitempty"`  // última IP local/pública vista por `tawanzu view`
+	Ports     []string              `json:"ports,omitempty"`     // puertos abiertos con `tawanzu add port --raw`
+	Published map[string]*Published `json:"published,omitempty"` // puertos publicados tras Nginx con `tawanzu add port`
+	History   []string              `json:"history"`
 
 	base []byte // instantánea JSON del estado al cargarlo: sirve para fusionar cambios al guardar
 }
@@ -95,6 +105,9 @@ func Load() *State {
 	if s.Domains == nil {
 		s.Domains = map[string]*Domain{}
 	}
+	if s.Published == nil {
+		s.Published = map[string]*Published{}
+	}
 	s.base = snapshot(s)
 	return s
 }
@@ -115,6 +128,9 @@ func readDisk() *State {
 	}
 	if d.Domains == nil {
 		d.Domains = map[string]*Domain{}
+	}
+	if d.Published == nil {
+		d.Published = map[string]*Published{}
 	}
 	return d
 }
@@ -140,6 +156,19 @@ func merge(base, mine, disk *State) *State {
 	for k := range base.Domains {
 		if _, ok := mine.Domains[k]; !ok {
 			delete(disk.Domains, k)
+		}
+	}
+	if disk.Published == nil {
+		disk.Published = map[string]*Published{}
+	}
+	for k, v := range mine.Published {
+		if b, ok := base.Published[k]; !ok || !reflect.DeepEqual(b, v) {
+			disk.Published[k] = v
+		}
+	}
+	for k := range base.Published {
+		if _, ok := mine.Published[k]; !ok {
+			delete(disk.Published, k)
 		}
 	}
 	if mine.Profile != base.Profile {
@@ -217,7 +246,7 @@ func (s *State) Save() error {
 		return err
 	}
 	// El estado de este proceso pasa a reflejar lo que hay en disco y la nueva base.
-	*s = State{Profile: out.Profile, Installed: out.Installed, Projects: out.Projects, Domains: out.Domains, LastIPs: out.LastIPs, Ports: out.Ports, History: out.History}
+	*s = State{Profile: out.Profile, Installed: out.Installed, Projects: out.Projects, Domains: out.Domains, LastIPs: out.LastIPs, Ports: out.Ports, Published: out.Published, History: out.History}
 	s.base = snapshot(s)
 	return nil
 }
@@ -271,5 +300,24 @@ func (s *State) UsedPorts() map[int]bool {
 			m[d.Port] = true
 		}
 	}
+	for _, p := range s.Published {
+		m[p.Backend] = true
+	}
 	return m
+}
+
+// Publish registra un puerto publicado tras Nginx.
+func (s *State) Publish(p Published) {
+	if s.Published == nil {
+		s.Published = map[string]*Published{}
+	}
+	s.Published[fmt.Sprint(p.Public)] = &p
+}
+
+// Unpublish olvida un puerto publicado y lo devuelve (nil si no existía).
+func (s *State) Unpublish(public int) *Published {
+	k := fmt.Sprint(public)
+	p := s.Published[k]
+	delete(s.Published, k)
+	return p
 }

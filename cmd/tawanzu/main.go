@@ -62,7 +62,7 @@ func globalFlags(in []string) []string {
 	return out
 }
 
-var valued = map[string]bool{"port": true, "email": true, "project": true, "interval": true, "top": true, "keep": true, "from": true, "ip": true, "zone": true, "ttl": true, "provider": true}
+var valued = map[string]bool{"port": true, "email": true, "project": true, "interval": true, "top": true, "keep": true, "from": true, "ip": true, "zone": true, "ttl": true, "provider": true, "public": true}
 
 // parseFlags separa banderas (--k=v, --k v, --bool) de argumentos posicionales.
 func parseFlags(args []string) (map[string]string, []string) {
@@ -152,6 +152,8 @@ func run(cmd string, args []string) error {
 			}
 		}
 		return nil
+	case "remove", "rm":
+		return removeCmd(i, st, rest)
 	case "view":
 		return view.Run(st, view.Options{Local: fl["local"] == "true", Public: fl["public"] == "true", Web: fl["web"] == "true", JSON: fl["json"] == "true"})
 	case "setup":
@@ -244,7 +246,9 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-// addPorts abre uno o varios puertos en el firewall y los registra en el estado.
+// addPorts publica puertos. Un puerto TCP normal (`add port 1555`) se publica COMPLETO: Nginx como
+// proxy con límites de concurrencia, firewall solo para el puerto público y registro en el estado.
+// UDP, rangos y `--raw` (bases de datos, juegos...) solo se abren en el firewall.
 func addPorts(i *system.Info, st *state.State, fl map[string]string, args []string) error {
 	specs, err := security.ParsePortSpecs(args)
 	if err != nil {
@@ -254,6 +258,41 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 	if from != "" && !security.ValidSource(from) {
 		return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", from)
 	}
+	public := 0
+	if fl["public"] != "" {
+		if public, err = strconv.Atoi(fl["public"]); err != nil || public < 1 || public > 65535 {
+			return fmt.Errorf("--public debe ser un puerto entre 1 y 65535")
+		}
+		if len(specs) != 1 {
+			return fmt.Errorf("--public solo se puede usar con un puerto")
+		}
+	}
+	var raw []security.PortSpec
+	for _, p := range specs {
+		if fl["raw"] == "true" || p.Proto != "tcp" || p.End != p.Start {
+			raw = append(raw, p)
+			continue
+		}
+		if system.PortOpen(p.Start) && !system.HTTPHealthy(p.Start) {
+			ui.Warn("el puerto %d está en uso pero no responde HTTP (¿base de datos, TCP crudo?)", p.Start)
+			if !ui.Confirm("¿Abrirlo tal cual en el firewall, sin Nginx?", true) {
+				return fmt.Errorf("cancelado")
+			}
+			raw = append(raw, p)
+			continue
+		}
+		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: p.Start, Public: public, From: from}); err != nil {
+			return err
+		}
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	return openRaw(i, st, raw, from)
+}
+
+// openRaw abre puertos en el firewall sin pasar por Nginx y los registra en el estado.
+func openRaw(i *system.Info, st *state.State, specs []security.PortSpec, from string) error {
 	used := st.UsedPorts()
 	for _, p := range specs {
 		for n := p.Start; n <= p.End; n++ {
@@ -282,6 +321,28 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 	}
 	ui.OK("puertos abiertos: %s", portsText(specs))
 	return st.Save()
+}
+
+// removeCmd: `remove port N` deshace un `add port`.
+func removeCmd(i *system.Info, st *state.State, rest []string) error {
+	if len(rest) != 2 || (rest[0] != "port" && rest[0] != "ports") {
+		return fmt.Errorf("uso: tawanzu remove port <puerto_publico>")
+	}
+	if err := needRoot(i); err != nil {
+		return err
+	}
+	n, err := strconv.Atoi(rest[1])
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("puerto inválido: %q", rest[1])
+	}
+	if !ui.Confirm(fmt.Sprintf("¿Dejar de publicar el puerto %d (Nginx y firewall)?", n), false) {
+		return nil
+	}
+	if err := netcfg.UnpublishPort(i, st, n); err != nil {
+		return err
+	}
+	ui.OK("puerto %d ya no está publicado", n)
+	return nil
 }
 
 func portsText(specs []security.PortSpec) string {
@@ -522,7 +583,9 @@ HERRAMIENTAS
   view [--local] [--public] [--web] [--json]                 IP local (privada), IP pública y dónde apunta cada dominio; avisa si cambiaron
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso
-  add port <n...> [--from IP]        Abre uno o varios puertos (1555, 8080/udp, 8000-8010, 80,443)
+  add port <n> [--from IP] [--public P]   Publica la app del puerto n: Nginx (proxy, límites), firewall y estado, todo en uno
+  add port <n...> --raw              Solo firewall, sin Nginx (UDP, rangos 8000-8010, bases de datos)
+  remove port <puerto_publico>       Deja de publicarlo (Nginx + firewall)
   add <módulo...> | add --list       php, node, go, python, docker, redis, database:postgres, database:mysql, database:caimandb...
 
 ARCHIVOS

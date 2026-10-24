@@ -1,5 +1,17 @@
 # Cambios tras la revisión de código
 
+## Nuevo: `add port` publica todo en un paso
+- `add port N` ahora configura Nginx (proxy a `127.0.0.1:N`, `limit_conn`/`limit_req` por IP con 429, keep-alive
+  hacia la app, timeouts, cabeceras, bloqueo de dotfiles, 503 legible si la app no responde), abre solo el puerto
+  público en el firewall y lo registra (`published` en `state.json`). Antes solo abría el firewall.
+- **"Welcome to nginx!" al entrar por la IP**: `init` y `add port` desactivan `sites-enabled/default` si es el de
+  fábrica (el archivo en `sites-available` se conserva; uno personalizado no se toca).
+- Detecta cómo escucha la app (`/proc/net/tcp*`): en loopback → mismo número público; en `0.0.0.0` → otro puerto
+  público para no exponerla sin Nginx. `--public`, `--from` (firewall + `allow/deny` en Nginx) y `--raw` (comportamiento anterior).
+- `remove port <público>` deshace Nginx y firewall. Reversión automática si `nginx -t` o la recarga fallan.
+- Probado con Nginx 1.24 real (proxy, 403 en dotfiles, 503 con app caída, 429 bajo ráfaga de 200 peticiones, convivencia
+  de `127.0.0.1:N` y `IP:N`) y pruebas unitarias. **Sin probar** contra ufw/firewalld/systemd reales: úsalo primero en un VPS desechable.
+
 ## Nuevo: `tawanzu view` (IP local, pública y web)
 - `view --local | --public | --web` (sin banderas, las tres; `--json` disponible). Consulta siempre en vivo y guarda la
   última IP vista (`last_ips` en `state.json`, con fusión entre procesos): si cambió, lo avisa, lo anota en el historial

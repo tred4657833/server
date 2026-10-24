@@ -152,3 +152,45 @@ func OpenPorts(i *system.Info, specs []PortSpec, from string) error {
 	}
 	return fmt.Errorf("no hay firewall soportado para %q", i.PkgMgr)
 }
+
+// FirewallReady comprueba, SIN tocar nada, que hay un firewall soportado e instalado. Se llama antes
+// de escribir la configuración de Nginx para no dejar un puerto a medias.
+func FirewallReady(i *system.Info) error {
+	switch {
+	case i.PkgMgr == "apt":
+		if !i.Installed["ufw"] {
+			return fmt.Errorf("ufw no está instalado: ejecuta primero `sudo tawanzu init` (instala el firewall dejando SSH permitido)")
+		}
+		return nil
+	case i.PkgMgr == "dnf" || i.PkgMgr == "yum":
+		if !i.Installed["firewall-cmd"] {
+			return fmt.Errorf("firewalld no está instalado: ejecuta primero `sudo tawanzu init`")
+		}
+		return nil
+	}
+	return fmt.Errorf("no hay firewall soportado para %q", i.PkgMgr)
+}
+
+// ClosePorts deshace OpenPorts (misma sintaxis y mismo `from`).
+func ClosePorts(i *system.Info, specs []PortSpec, from string) error {
+	switch {
+	case i.PkgMgr == "apt":
+		for _, p := range specs {
+			args := append([]string{"--force", "delete"}, ufwRule(p, from)...)
+			if _, err := runner.Run("ufw", args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	case i.PkgMgr == "dnf" || i.PkgMgr == "yum":
+		for _, p := range specs {
+			r := strings.Replace(firewalldRule(p, from), "--add-", "--remove-", 1)
+			if _, err := runner.Run("firewall-cmd", "--permanent", r); err != nil {
+				return err
+			}
+		}
+		_, err := runner.Run("firewall-cmd", "--reload")
+		return err
+	}
+	return fmt.Errorf("no hay firewall soportado para %q", i.PkgMgr)
+}
