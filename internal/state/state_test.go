@@ -142,3 +142,31 @@ func TestPublishedMergeAndUsedPorts(t *testing.T) {
 		t.Errorf("el borrado no se guardó: %v", d.Published)
 	}
 }
+
+// `remove all` debe vaciar lo de infraestructura pero conservar los proyectos.
+func TestResetInfraKeepsProjects(t *testing.T) {
+	t.Setenv("TAWANZU_HOME", t.TempDir())
+	s := Load()
+	s.Profile = "web"
+	s.MarkInstalled("base")
+	s.AddPort("1555/tcp")
+	s.Publish(Published{Public: 80, Backend: 1555})
+	s.Domains["d.com"] = &Domain{Name: "d.com", Port: 3000}
+	s.Projects["uno"] = &Project{Name: "uno", Domain: "d.com"}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetInfra(); err != nil {
+		t.Fatal(err)
+	}
+	got := Load()
+	if got.Profile != "" || len(got.Installed) != 0 || len(got.Ports) != 0 || len(got.Published) != 0 || len(got.Domains) != 0 {
+		t.Fatalf("la infraestructura debía quedar vacía: %+v", got)
+	}
+	if got.Projects["uno"] == nil || got.Projects["uno"].Domain != "" {
+		t.Fatalf("el proyecto debe conservarse sin dominio: %+v", got.Projects["uno"])
+	}
+	if got.IsInstalled("base") {
+		t.Fatal("init debe poder ejecutarse de nuevo")
+	}
+}

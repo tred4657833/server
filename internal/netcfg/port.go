@@ -12,6 +12,7 @@ import (
 	"tawanzu/internal/services"
 	"tawanzu/internal/state"
 	"tawanzu/internal/system"
+	"tawanzu/internal/tune"
 	"tawanzu/internal/ui"
 )
 
@@ -154,6 +155,7 @@ type PortOptions struct {
 	Backend int    // puerto donde escucha la app (127.0.0.1)
 	Public  int    // 0 = automático
 	From    string // IP/CIDR permitida (varias separadas por coma)
+	Index   bool   // página principal: puerto 80 (http://IP/), solo para la red local; reemplaza lo que hubiera en el 80
 	LAN     bool   // solo red local: escucha en las IPs privadas, puerto 80 por defecto y firewall solo para la LAN
 }
 
@@ -242,11 +244,11 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 			return fmt.Errorf("--from debe ser una IP o un CIDR válido (p. ej. 10.0.0.5 o 10.0.0.0/24), no %q", f)
 		}
 	}
-	if err := security.FirewallReady(i); err != nil {
-		return err
-	}
-	if !i.Installed["nginx"] && !runner.Has("nginx") {
-		return fmt.Errorf("Nginx no está instalado: ejecuta primero `sudo tawanzu init`")
+	if o.Index {
+		if o.Public != 0 && o.Public != 80 {
+			return fmt.Errorf("--index publica en el puerto 80; quita --public %d o usa uno de los dos", o.Public)
+		}
+		o.Public, o.LAN = 80, true
 	}
 	var local []string
 	var lanNets []string
@@ -271,15 +273,27 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	if o.LAN && o.Public == 0 {
 		pubKey = 80
 	}
-	if prev := st.Published[fmt.Sprint(pubKey)]; prev != nil && prev.Backend != o.Backend {
+	prev := st.Published[fmt.Sprint(pubKey)]
+	replace := o.Index && prev != nil && prev.Backend != o.Backend
+	if prev != nil && prev.Backend != o.Backend && !replace {
 		return fmt.Errorf("el puerto público %d ya publica la app del puerto %d: quítala con `tawanzu remove port %d` o elige otro con --public", pubKey, prev.Backend, pubKey)
 	}
-	_, ours := st.Published[fmt.Sprint(pubKey)]
+	ours := prev != nil && !replace
 	pl, err := PlanPort(o, system.ListenAddrs, local, func(p int) bool { return used[p] || st.Published[fmt.Sprint(p)] != nil }, ours)
 	if err != nil {
 		return err
 	}
 	s := pl.Site
+	fwOK, err := prepareHost(i)
+	if err != nil {
+		return err
+	}
+	if replace {
+		ui.Info("la página principal (puerto 80) era la app del puerto %d: se reemplaza por la del %d", prev.Backend, o.Backend)
+		if err := UnpublishPort(i, st, pubKey); err != nil {
+			return err
+		}
+	}
 	ui.Title("Publicar puerto")
 	ui.Plain("App:     127.0.0.1:%d (privada)", s.Backend)
 	ui.Plain("Público: %d  →  Nginx  →  127.0.0.1:%d", s.Public, s.Backend)
@@ -334,14 +348,16 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 
 	// 2. Firewall: solo el puerto público; el de la app sigue cerrado si es otro.
-	ui.Step("abriendo %d/tcp en el firewall", s.Public)
 	spec := security.PortSpec{Start: s.Public, End: s.Public, Proto: "tcp"}
-	for _, f := range fromList(s.From) {
-		if err := security.OpenPorts(i, []security.PortSpec{spec}, f); err != nil {
-			runner.Restore(path, bak)
-			runner.Restore(portInfraPath, infraBak)
-			_ = services.Reload("nginx")
-			return err
+	if fwOK {
+		ui.Step("abriendo %d/tcp en el firewall", s.Public)
+		for _, f := range fromList(s.From) {
+			if err := security.OpenPorts(i, []security.PortSpec{spec}, f); err != nil {
+				runner.Restore(path, bak)
+				runner.Restore(portInfraPath, infraBak)
+				_ = services.Reload("nginx")
+				return err
+			}
 		}
 	}
 
@@ -359,18 +375,19 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 
 	ui.OK("puerto %d publicado", s.Public)
-	// La URL que se muestra usa la IP de la red local de esta máquina (la real, detectada en el
-	// momento), nunca la IP pública de Internet.
+	// La URL usa la IP de la red local de esta máquina (la real, detectada en el momento), nunca la IP pública.
 	host := lanHost(localIPs)
 	if host == "" {
 		host = firstOf(local)
 	}
 	if host != "" {
-		url := fmt.Sprintf("http://%s:%d", host, s.Public)
+		url := fmt.Sprintf("http://%s:%d/", host, s.Public)
 		if s.Public == 80 {
 			url = "http://" + host + "/"
 		}
-		ui.Plain("   %s", ui.Bold(url))
+		ui.Plain("")
+		ui.Plain("   Listo: %s", ui.Bold(url))
+		ui.Plain("")
 	}
 	if o.LAN {
 		ui.OK("solo accesible desde tu red local (%s); la app y el puerto %d siguen privados", strings.Join(splitFrom(s.From), ", "), s.Backend)
@@ -378,6 +395,42 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		ui.Info("es HTTP sin cifrar; para HTTPS usa un dominio: tawanzu setup domain tudominio.com --port %d", s.Backend)
 	}
 	return nil
+}
+
+// prepareHost deja el servidor listo para publicar: instala Nginx y el firewall si faltan (p. ej. tras
+// `remove all`) y arranca Nginx si está parado. Devuelve false si no hay firewall utilizable: se publica
+// igual (Nginx limita por IP con --lan/--from) pero se avisa.
+func prepareHost(i *system.Info) (bool, error) {
+	if !i.Installed["nginx"] && !runner.Has("nginx") {
+		if i.PkgMgr == "" {
+			return false, fmt.Errorf("Nginx no está instalado y este sistema no tiene un gestor de paquetes soportado")
+		}
+		ui.Step("Nginx no está instalado: instalándolo")
+		if err := InstallNginx(i, tune.Analyze(i)); err != nil {
+			return false, err
+		}
+		i.Installed["nginx"] = true
+	} else if !runner.DryRun && !services.IsActive("nginx") {
+		ui.Step("Nginx estaba parado: arrancándolo")
+		if err := services.Enable("nginx"); err != nil {
+			return false, fmt.Errorf("no se pudo arrancar Nginx: %w\n(revisa `sudo nginx -t` y `sudo journalctl -u nginx -n 30`)", err)
+		}
+	}
+	if security.FirewallReady(i) == nil {
+		return true, nil
+	}
+	ui.Step("instalando y activando el firewall (SSH permitido)")
+	if err := security.Firewall(i); err != nil {
+		ui.Warn("no se pudo preparar el firewall: %v", err)
+		ui.Warn("se publica sin tocar el firewall; Nginx sigue limitando por IP si usas --lan o --from")
+		return false, nil
+	}
+	if i.PkgMgr == "apt" {
+		i.Installed["ufw"] = true
+	} else {
+		i.Installed["firewall-cmd"] = true
+	}
+	return true, nil
 }
 
 // UnpublishPort deshace PublishPort.

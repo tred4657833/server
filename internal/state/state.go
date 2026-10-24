@@ -321,3 +321,44 @@ func (s *State) Unpublish(public int) *Published {
 	delete(s.Published, k)
 	return p
 }
+
+// ResetInfra olvida todo lo que dejó `init`, `add port` y los dominios (módulos instalados, perfil,
+// puertos, publicaciones y dominios) para que `tawanzu init` empiece de cero. Los proyectos y el
+// historial se conservan. Escribe directamente en disco: la fusión de Save() solo sabe añadir.
+func (s *State) ResetInfra() error {
+	if runner.DryRun {
+		return nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if err := os.MkdirAll(Home(), 0o755); err != nil {
+		return err
+	}
+	unlock, err := lockFile(filepath.Join(Home(), "state.lock"))
+	if err != nil {
+		return fmt.Errorf("no se pudo bloquear el estado: %w", err)
+	}
+	defer unlock()
+	d := readDisk()
+	d.Profile, d.Installed, d.Ports = "", []string{}, nil
+	d.Published, d.Domains = nil, map[string]*Domain{}
+	for _, p := range d.Projects {
+		p.Domain = ""
+	}
+	d.History = append(d.History, time.Now().Format(time.RFC3339)+" remove all")
+	b, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf("%s.%d.tmp", file(), os.Getpid())
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, file()); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	*s = State{Profile: d.Profile, Installed: d.Installed, Projects: d.Projects, Domains: d.Domains, LastIPs: d.LastIPs, Ports: d.Ports, Published: d.Published, History: d.History}
+	s.base = snapshot(s)
+	return nil
+}

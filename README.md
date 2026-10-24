@@ -41,6 +41,7 @@ Opciones globales: `--dry-run` (simula y no guarda estado), `--yes`, `--verbose`
 ### `add port`
 ```
 sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555 (muestra la URL con la IP de tu red local, p. ej. http://192.168.x.x/)
+sudo tawanzu add port 1555 --index          # tu app como página principal de la red local: http://192.168.x.x/ (puerto 80); reemplaza la que hubiera en el 80
 sudo tawanzu add port 1555 --lan            # SOLO red local: http://192.168.x.x/ (puerto 80), nada hacia Internet
 sudo tawanzu add port 1555 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
 sudo tawanzu add port 3000 --public 8080    # Nginx escucha en 8080 y reenvía a la app en 3000
@@ -48,6 +49,18 @@ sudo tawanzu add port 5432 --raw            # solo firewall, sin Nginx (bases de
 sudo tawanzu add port 8080/udp 8000-8010    # UDP y rangos: solo firewall
 sudo tawanzu remove port 1555               # deshacer
 ```
+
+`add port` no necesita `init` previo: si falta Nginx o el firewall, los instala y los arranca, y al terminar muestra la URL lista
+con la IP de tu red local (`http://192.168.x.x:1555/`, o `http://192.168.x.x/` con `--index`).
+
+### `remove all`
+```
+sudo tawanzu remove all     # quita todo lo que instaló Tawanzu para empezar de nuevo con `sudo tawanzu init`
+```
+Elimina Nginx (y sus puertos/dominios publicados), el firewall (ufw/firewalld, queda desactivado y sin reglas), Certbot, Fail2ban,
+el guardián y la copia diaria, los ajustes de Tawanzu en sysctl y SSH, y el estado (módulos, puertos, dominios). **Conserva** tus
+proyectos y sus servicios, las copias de seguridad, los certificados de `/etc/letsencrypt`, git, curl, el swap y las
+actualizaciones automáticas. Pide confirmación (`--yes` la omite) y admite `--dry-run` para ver qué haría.
 Un solo comando deja listo: proxy de Nginx, límites por IP (40 conexiones simultáneas, `tawanzu_req` por segundo con ráfaga de 60; responde 429), keep-alive hacia la app, timeouts contra conexiones lentas, bloqueo de dotfiles (`/.env`, `/.git`), cabeceras de seguridad, `X-Forwarded-For` sin falsificar, firewall (solo el puerto público) y registro en `state.json`. Si Nginx no pasa `nginx -t` o no recarga, se restaura la configuración anterior.
 
 **`--lan`.** Nginx escucha únicamente en las IPs privadas del servidor (192.168.x, 10.x, 172.16-31.x) en el puerto 80 (o el de `--public`), el firewall solo admite la red local (la `/24` de cada interfaz, o lo que pongas en `--from`) y la app sigue en su puerto privado. Dos apps no pueden usar el 80: la segunda debe llevar otro `--public`.

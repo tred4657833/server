@@ -77,6 +77,40 @@ func IsInstalled(pm, pkg string) bool {
 	case "dnf", "yum":
 		_, err := runner.Query("rpm", "-q", pkg)
 		return err == nil
+	case "apk":
+		_, err := runner.Query("apk", "info", "-e", pkg)
+		return err == nil
+	case "pacman":
+		_, err := runner.Query("pacman", "-Qi", pkg)
+		return err == nil
 	}
 	return false
+}
+
+// Remove desinstala paquetes (apt: purge, para borrar también su configuración). Ignora los que no
+// están instalados; si no queda ninguno, no hace nada.
+func Remove(pm string, pkgs ...string) error {
+	var have []string
+	for _, p := range pkgs {
+		if IsInstalled(pm, p) {
+			have = append(have, p)
+		}
+	}
+	if len(have) == 0 {
+		return nil
+	}
+	var err error
+	switch pm {
+	case "apt":
+		_, err = runner.Run("apt-get", append([]string{"purge", "-y", "-qq"}, have...)...)
+	case "dnf", "yum":
+		_, err = runner.Run(pm, append([]string{"remove", "-y", "-q"}, have...)...)
+	case "apk":
+		_, err = runner.Run("apk", append([]string{"del"}, have...)...)
+	case "pacman":
+		_, err = runner.Run("pacman", append([]string{"-Rns", "--noconfirm"}, have...)...)
+	default:
+		return fmt.Errorf("gestor de paquetes no soportado: %q", pm)
+	}
+	return err
 }

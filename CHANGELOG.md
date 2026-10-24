@@ -1,5 +1,14 @@
 # Cambios tras la revisión de código
 
+## Nuevo: `remove all`, `add port --index` y `add port` autosuficiente
+- `tawanzu remove all`: desinstala Nginx, firewall, Certbot y Fail2ban, quita guardián, copia diaria y ajustes de Tawanzu
+  (sysctl, SSH) y reinicia el estado de infraestructura para volver a empezar con `tawanzu init`. No toca proyectos, copias,
+  certificados de Let's Encrypt, git, curl ni swap. Pide confirmación; admite `--dry-run`.
+- `add port N --index`: publica la app como página principal de la red local (`http://<IP privada>/`, puerto 80, firewall y
+  Nginx limitados a la LAN). Si el 80 ya tenía otra app de `add port`, la reemplaza.
+- `add port N` ya no exige `init`: instala y arranca Nginx y el firewall si faltan (SSH siempre permitido). Si el firewall no se
+  puede preparar, publica igualmente y avisa. Termina con `Listo: http://192.168.x.x:N/`.
+
 ## Cambio: `add port` muestra la IP local, no la pública
 - La URL que imprime `add port` ya no usa la IP pública de Internet (p. ej. `189.187.106.104`): usa la IP privada real
   del equipo (192.168.x.x, 10.x.x.x o 172.16-31.x.x), detectada en el momento; la principal de salida si es privada.

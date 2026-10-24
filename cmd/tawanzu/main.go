@@ -273,6 +273,10 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 			return fmt.Errorf("--public solo se puede usar con un puerto")
 		}
 	}
+	index := fl["index"] == "true"
+	if index && (len(specs) != 1 || fl["raw"] == "true") {
+		return fmt.Errorf("--index publica una sola app web en el puerto 80: tawanzu add port <n> --index")
+	}
 	var raw []security.PortSpec
 	for _, p := range specs {
 		if fl["raw"] == "true" || p.Proto != "tcp" || p.End != p.Start {
@@ -287,7 +291,7 @@ func addPorts(i *system.Info, st *state.State, fl map[string]string, args []stri
 			raw = append(raw, p)
 			continue
 		}
-		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: p.Start, Public: public, From: from, LAN: fl["lan"] == "true"}); err != nil {
+		if err := netcfg.PublishPort(i, st, netcfg.PortOptions{Backend: p.Start, Public: public, From: from, LAN: fl["lan"] == "true", Index: index}); err != nil {
 			return err
 		}
 	}
@@ -331,8 +335,14 @@ func openRaw(i *system.Info, st *state.State, specs []security.PortSpec, from st
 
 // removeCmd: `remove port N` deshace un `add port`.
 func removeCmd(i *system.Info, st *state.State, rest []string) error {
+	if len(rest) == 1 && rest[0] == "all" {
+		if err := needRoot(i); err != nil {
+			return err
+		}
+		return brain.RemoveAll(i, st)
+	}
 	if len(rest) != 2 || (rest[0] != "port" && rest[0] != "ports") {
-		return fmt.Errorf("uso: tawanzu remove port <puerto_publico>")
+		return fmt.Errorf("uso: tawanzu remove port <puerto_publico>   |   tawanzu remove all")
 	}
 	if err := needRoot(i); err != nil {
 		return err
@@ -591,6 +601,8 @@ HERRAMIENTAS
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso
   add port <n> --lan                 Como arriba pero SOLO para tu red local: http://192.168.x.x/ (puerto 80), sin exponerlo a Internet
+  add port <n> --index               Tu app como página principal de la red local: http://192.168.x.x/ (puerto 80); reemplaza la que hubiera en el 80
+  remove all                         Quita todo lo que instaló Tawanzu (Nginx, firewall, Certbot, Fail2ban, servicios) para empezar de nuevo con init
   add port <n> [--from IP] [--public P]   Publica la app del puerto n: Nginx (proxy, límites), firewall y estado, todo en uno
   add port <n...> --raw              Solo firewall, sin Nginx (UDP, rangos 8000-8010, bases de datos)
   remove port <puerto_publico>       Deja de publicarlo (Nginx + firewall)

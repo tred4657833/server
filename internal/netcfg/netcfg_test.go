@@ -217,3 +217,18 @@ func TestLanHostUsesPrivateIPNeverPublic(t *testing.T) {
 		t.Fatalf("una IP pública nunca debe devolverse: %q", got)
 	}
 }
+
+// --index: puerto 80 solo en la red local, escuchando en la IP privada.
+func TestPlanPortIndexListensOnPrivateIPPort80(t *testing.T) {
+	app := func(int) []net.IP { return []net.IP{net.ParseIP("127.0.0.1")} }
+	free := func(int) bool { return false }
+	pl, err := PlanPort(PortOptions{Backend: 1555, Public: 80, LAN: true}, app, []string{"192.168.0.113"}, free, false)
+	if err != nil || pl.Site.Public != 80 || len(pl.Site.Binds) != 1 || pl.Site.Binds[0] != "192.168.0.113" {
+		t.Fatalf("--index debe publicar en 192.168.0.113:80: %+v %v", pl, err)
+	}
+	// Sin --index ni --lan, el mismo número de la app: http://IP:1555/
+	pl, err = PlanPort(PortOptions{Backend: 1555}, app, []string{"192.168.0.113"}, free, false)
+	if err != nil || pl.Site.Public != 1555 || pl.Site.Binds[0] != "192.168.0.113" {
+		t.Fatalf("por defecto debe publicar en 192.168.0.113:1555: %+v %v", pl, err)
+	}
+}
