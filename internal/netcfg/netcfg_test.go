@@ -232,3 +232,83 @@ func TestPlanPortIndexListensOnPrivateIPPort80(t *testing.T) {
 		t.Fatalf("por defecto debe publicar en 192.168.0.113:1555: %+v %v", pl, err)
 	}
 }
+
+const stockSite = "server {\n    listen 80 default_server;\n    root /var/www/html;\n    index index.html index.nginx-debian.html;\n}\n"
+
+func newDefaultSite(t *testing.T, content string) defaultSite {
+	t.Helper()
+	dir := t.TempDir()
+	d := defaultSite{
+		avail: filepath.Join(dir, "sites-available", "default"),
+		link:  filepath.Join(dir, "sites-enabled", "default"),
+		orig:  filepath.Join(dir, "sites-available", "default.tawanzu-orig"),
+	}
+	if err := os.MkdirAll(filepath.Dir(d.avail), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.avail, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// --index reescribe el sitio por defecto, guarda el original y `remove port` lo devuelve.
+func TestDefaultSiteInstallAndRestore(t *testing.T) {
+	d := newDefaultSite(t, stockSite)
+	site := PortSite{Public: 80, Backend: 1555, Binds: []string{"192.168.0.113"}, From: "192.168.0.0/24", Default: true}
+	out := site.Render()
+	if !strings.Contains(out, "listen 192.168.0.113:80 default_server;") || !strings.Contains(out, "proxy_pass http://tawanzu_up_80;") {
+		t.Fatalf("el sitio por defecto debe escuchar en la IP con default_server y hacer proxy:\n%s", out)
+	}
+	if _, err := d.install(out); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(d.avail)
+	if !strings.Contains(string(got), managedMark) || strings.Contains(string(got), "/var/www/html") {
+		t.Fatalf("el default debe ser ahora la app:\n%s", got)
+	}
+	if o, _ := os.ReadFile(d.orig); string(o) != stockSite {
+		t.Fatal("falta la copia del original")
+	}
+	if fi, err := os.Lstat(d.link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("el sitio por defecto debe quedar habilitado")
+	}
+	// Reinstalar (otro --index) no debe pisar la copia del original con el sitio de Tawanzu.
+	if _, err := d.install(out); err != nil {
+		t.Fatal(err)
+	}
+	if o, _ := os.ReadFile(d.orig); string(o) != stockSite {
+		t.Fatal("la copia del original se perdió al reinstalar")
+	}
+	if err := d.restore(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(d.avail); string(got) != stockSite {
+		t.Fatalf("no se restauró el original:\n%s", got)
+	}
+	if _, err := os.Lstat(d.link); err == nil {
+		t.Fatal("el de fábrica debe quedar desactivado, como lo deja init")
+	}
+	if _, err := os.Stat(d.orig); err == nil {
+		t.Fatal("la copia debe borrarse al restaurar")
+	}
+}
+
+// Si el install falla en Nginx, la función de deshacer deja todo como estaba.
+func TestDefaultSiteUndo(t *testing.T) {
+	d := newDefaultSite(t, stockSite)
+	undo, err := d.install("# Gestionado por Tawanzu (add port 1555)\nserver {}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	undo()
+	if got, _ := os.ReadFile(d.avail); string(got) != stockSite {
+		t.Fatalf("undo no restauró el contenido:\n%s", got)
+	}
+	if _, err := os.Lstat(d.link); err == nil {
+		t.Fatal("undo debe quitar el enlace que creó")
+	}
+	if _, err := os.Stat(d.orig); err == nil {
+		t.Fatal("undo debe quitar la copia que creó")
+	}
+}

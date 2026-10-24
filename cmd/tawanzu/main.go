@@ -601,7 +601,7 @@ HERRAMIENTAS
   add dns api.midominio.com [--ip IP] [--provider p]         Crea el registro A (Cloudflare, DigitalOcean, GoDaddy, Hostinger o tu comando)
   setup domain api.midominio.com --port 1555 [--ip IP]       DNS + Nginx + HTTPS en un paso
   add port <n> --lan                 Como arriba pero SOLO para tu red local: http://192.168.x.x/ (puerto 80), sin exponerlo a Internet
-  add port <n> --index               Tu app como página principal de la red local: http://192.168.x.x/ (puerto 80); reemplaza la que hubiera en el 80
+  add port <n> --index               Tu app como página principal de la red local: http://192.168.x.x/ (puerto 80). Reescribe el sitio por defecto de Nginx (guarda copia del original)
   remove all                         Quita todo lo que instaló Tawanzu (Nginx, firewall, Certbot, Fail2ban, servicios) para empezar de nuevo con init
   add port <n> [--from IP] [--public P]   Publica la app del puerto n: Nginx (proxy, límites), firewall y estado, todo en uno
   add port <n...> --raw              Solo firewall, sin Nginx (UDP, rangos 8000-8010, bases de datos)

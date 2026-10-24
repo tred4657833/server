@@ -43,6 +43,7 @@ type Published struct {
 	Public  int       `json:"public"`
 	Backend int       `json:"backend"`
 	From    string    `json:"from,omitempty"`
+	Default bool      `json:"default,omitempty"` // --index: la app ocupa el sitio por defecto de Nginx (sites-available/default)
 	Created time.Time `json:"created"`
 }
 

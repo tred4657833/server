@@ -1,9 +1,11 @@
 package netcfg
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +43,8 @@ type PortSite struct {
 	Binds []string
 	From  string // IP/CIDR permitida ("" = cualquiera)
 	IPv6  bool   // escuchar también en [::]: solo si el sistema tiene IPv6 (si no, nginx no arranca)
+	// Default marca el server como default_server: --index lo escribe en el sitio por defecto de Nginx.
+	Default bool
 }
 
 func portConfPath(public int) string {
@@ -54,14 +58,18 @@ func (p PortSite) Render() string {
 	fmt.Fprintf(&b, "# Gestionado por Tawanzu (add port %d)\n", p.Backend)
 	fmt.Fprintf(&b, "upstream %s {\n    server 127.0.0.1:%d max_fails=3 fail_timeout=10s;\n    keepalive 32;\n}\n\n", name, p.Backend)
 	b.WriteString("server {\n")
+	def := ""
+	if p.Default {
+		def = " default_server"
+	}
 	if len(p.Binds) == 0 {
-		fmt.Fprintf(&b, "    listen %d;\n", p.Public)
+		fmt.Fprintf(&b, "    listen %d%s;\n", p.Public, def)
 		if p.IPv6 {
-			fmt.Fprintf(&b, "    listen [::]:%d ipv6only=on;\n", p.Public)
+			fmt.Fprintf(&b, "    listen [::]:%d ipv6only=on%s;\n", p.Public, def)
 		}
 	} else {
 		for _, ip := range p.Binds {
-			fmt.Fprintf(&b, "    listen %s:%d;\n", ip, p.Public)
+			fmt.Fprintf(&b, "    listen %s:%d%s;\n", ip, p.Public, def)
 		}
 	}
 	b.WriteString("    server_name _;\n\n")
@@ -309,11 +317,6 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 
 	// 1. Nginx
 	ui.Step("configurando Nginx (proxy, límites de conexiones y de peticiones, timeouts)")
-	if off, err := DisableDefaultSite(); err != nil {
-		ui.Warn("no se pudo desactivar la página por defecto de Nginx: %v", err)
-	} else if off {
-		ui.OK("página \"Welcome to nginx!\" desactivada")
-	}
 	if err := EnsureUpgradeMap(); err != nil {
 		return err
 	}
@@ -331,20 +334,53 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		}
 	}
 	path := portConfPath(s.Public)
-	bak, err := runner.WriteFile(path, s.Render(), 0o644)
-	if err != nil {
-		return err
+	var undo func()
+	asDefault := false
+	if o.Index && stdDefault.available() {
+		ds := s
+		ds.Default = true
+		u, err := stdDefault.install(ds.Render())
+		switch {
+		case err == nil:
+			// El sitio por defecto ya es la app: un archivo propio del 80 duplicaría el listen.
+			old, rerr := os.ReadFile(path)
+			if rerr == nil && !runner.DryRun {
+				_ = os.Remove(path)
+				prevUndo := u
+				u = func() { prevUndo(); _ = os.WriteFile(path, old, 0o644) }
+			}
+			undo, asDefault = u, true
+		case errors.Is(err, errKeepDefault):
+			ui.Info("se deja intacto tu sitio por defecto; la app se publica en su propio archivo")
+		default:
+			return err
+		}
+	}
+	if !asDefault {
+		bak, err := runner.WriteFile(path, s.Render(), 0o644)
+		if err != nil {
+			return err
+		}
+		undo = func() { runner.Restore(path, bak) }
+		if off, err := DisableDefaultSite(); err != nil {
+			ui.Warn("no se pudo desactivar la página por defecto de Nginx: %v", err)
+		} else if off {
+			ui.OK("página \"Welcome to nginx!\" desactivada")
+		}
 	}
 	if err := Test(); err != nil {
-		runner.Restore(path, bak)
+		undo()
 		runner.Restore(portInfraPath, infraBak)
 		return fmt.Errorf("nginx -t falló, se restauró la configuración anterior: %w", err)
 	}
 	if err := services.Reload("nginx"); err != nil {
-		runner.Restore(path, bak)
+		undo()
 		runner.Restore(portInfraPath, infraBak)
 		_ = services.Reload("nginx")
 		return fmt.Errorf("Nginx no pudo recargar (¿otro programa usa el puerto %d?): %w", s.Public, err)
+	}
+	if asDefault {
+		ui.OK("sitio por defecto de Nginx reescrito: ahora es tu app (copia del original en %s)", stdDefault.orig)
 	}
 
 	// 2. Firewall: solo el puerto público; el de la app sigue cerrado si es otro.
@@ -353,7 +389,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 		ui.Step("abriendo %d/tcp en el firewall", s.Public)
 		for _, f := range fromList(s.From) {
 			if err := security.OpenPorts(i, []security.PortSpec{spec}, f); err != nil {
-				runner.Restore(path, bak)
+				undo()
 				runner.Restore(portInfraPath, infraBak)
 				_ = services.Reload("nginx")
 				return err
@@ -362,7 +398,7 @@ func PublishPort(i *system.Info, st *state.State, o PortOptions) error {
 	}
 
 	// 3. Estado
-	st.Publish(state.Published{Public: s.Public, Backend: s.Backend, From: s.From, Created: time.Now()})
+	st.Publish(state.Published{Public: s.Public, Backend: s.Backend, From: s.From, Default: asDefault, Created: time.Now()})
 	for _, f := range splitFrom(s.From) {
 		st.AddPort(spec.String() + " desde " + f)
 	}
@@ -440,6 +476,11 @@ func UnpublishPort(i *system.Info, st *state.State, public int) error {
 		return fmt.Errorf("el puerto %d no se publicó con `tawanzu add port`", public)
 	}
 	path := portConfPath(public)
+	if p.Default {
+		if err := stdDefault.restore(); err != nil {
+			return err
+		}
+	}
 	if !runner.DryRun {
 		_ = os.Remove(path)
 	} else {
@@ -544,4 +585,121 @@ func lanCIDRs(ips []string) []string {
 		}
 	}
 	return out
+}
+
+// managedMark es la primera línea que Tawanzu pone en los sitios que genera.
+const managedMark = "# Gestionado por Tawanzu (add port"
+
+var errKeepDefault = errors.New("se conserva el sitio por defecto")
+
+// defaultSite es el sitio por defecto de Nginx en Debian/Ubuntu (sites-available/default enlazado desde
+// sites-enabled). --index lo reescribe para que sea la app; orig guarda el contenido original.
+type defaultSite struct{ avail, link, orig string }
+
+var stdDefault = defaultSite{
+	avail: "/etc/nginx/sites-available/default",
+	link:  "/etc/nginx/sites-enabled/default",
+	orig:  "/etc/nginx/sites-available/default.tawanzu-orig",
+}
+
+// available indica si el sistema usa sites-available/sites-enabled (en RHEL el sitio por defecto vive
+// dentro de nginx.conf y no se toca).
+func (d defaultSite) available() bool {
+	st, err := os.Stat(filepath.Dir(d.avail))
+	return err == nil && st.IsDir()
+}
+
+// install escribe content como sitio por defecto y lo habilita. Guarda el original en d.orig (solo la
+// primera vez) y devuelve una función que deshace el cambio si Nginx no lo acepta.
+func (d defaultSite) install(content string) (func(), error) {
+	if runner.DryRun {
+		ui.Plain("  %s reescribir el sitio por defecto de Nginx (%s)", ui.Dim("[dry-run]"), d.avail)
+		return func() {}, nil
+	}
+	prev, rerr := os.ReadFile(d.avail)
+	_, origErr := os.Stat(d.orig)
+	savedOrig := false
+	if rerr == nil && !strings.Contains(string(prev), managedMark) && origErr != nil {
+		if !stockDefault(string(prev)) {
+			ui.Warn("tu sitio por defecto de Nginx está personalizado y se va a reemplazar")
+			if !ui.Confirm(fmt.Sprintf("¿Reescribir %s? (queda una copia en %s)", d.avail, d.orig), true) {
+				return nil, errKeepDefault
+			}
+		}
+		if err := os.WriteFile(d.orig, prev, 0o644); err != nil {
+			return nil, err
+		}
+		savedOrig = true
+	}
+	bak, err := runner.WriteFile(d.avail, content, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	createdLink, renamed, err := d.ensureLink()
+	if err != nil {
+		runner.Restore(d.avail, bak)
+		return nil, err
+	}
+	return func() {
+		runner.Restore(d.avail, bak)
+		if createdLink {
+			_ = os.Remove(d.link)
+		}
+		if renamed {
+			_ = os.Rename(d.link+".tawanzu-disabled", d.link)
+		}
+		if savedOrig {
+			_ = os.Remove(d.orig)
+		}
+	}, nil
+}
+
+// ensureLink asegura sites-enabled/default → sites-available/default.
+func (d defaultSite) ensureLink() (created, renamed bool, err error) {
+	fi, lerr := os.Lstat(d.link)
+	if lerr == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			a, e1 := filepath.EvalSymlinks(d.link)
+			b, e2 := filepath.EvalSymlinks(d.avail)
+			if e1 == nil && e2 == nil && a == b {
+				return false, false, nil
+			}
+			if err := os.Remove(d.link); err != nil {
+				return false, false, err
+			}
+		} else {
+			if err := os.Rename(d.link, d.link+".tawanzu-disabled"); err != nil {
+				return false, false, err
+			}
+			renamed = true
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(d.link), 0o755); err != nil {
+		return false, renamed, err
+	}
+	if err := os.Symlink(d.avail, d.link); err != nil {
+		return false, renamed, err
+	}
+	return true, renamed, nil
+}
+
+// restore devuelve el sitio por defecto a como estaba antes de --index. Si era el de fábrica queda
+// desactivado, igual que lo deja `init` (para no mostrar "Welcome to nginx!").
+func (d defaultSite) restore() error {
+	if runner.DryRun {
+		ui.Plain("  %s restaurar el sitio por defecto de Nginx (%s)", ui.Dim("[dry-run]"), d.avail)
+		return nil
+	}
+	disable := true
+	if orig, err := os.ReadFile(d.orig); err == nil {
+		if err := os.WriteFile(d.avail, orig, 0o644); err != nil {
+			return err
+		}
+		_ = os.Remove(d.orig)
+		disable = stockDefault(string(orig))
+	}
+	if fi, err := os.Lstat(d.link); disable && err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(d.link)
+	}
+	return nil
 }

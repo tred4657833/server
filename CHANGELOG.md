@@ -5,7 +5,9 @@
   (sysctl, SSH) y reinicia el estado de infraestructura para volver a empezar con `tawanzu init`. No toca proyectos, copias,
   certificados de Let's Encrypt, git, curl ni swap. Pide confirmación; admite `--dry-run`.
 - `add port N --index`: publica la app como página principal de la red local (`http://<IP privada>/`, puerto 80, firewall y
-  Nginx limitados a la LAN). Si el 80 ya tenía otra app de `add port`, la reemplaza.
+  Nginx limitados a la LAN) editando el sitio por defecto de Nginx (`sites-available/default`, con `default_server`): guarda el
+  original en `default.tawanzu-orig`, lo habilita, y `remove port 80` lo restaura. Si estaba personalizado pregunta antes; sin
+  `sites-available` usa `conf.d`. Si el 80 ya tenía otra app de `add port`, la reemplaza.
 - `add port N` ya no exige `init`: instala y arranca Nginx y el firewall si faltan (SSH siempre permitido). Si el firewall no se
   puede preparar, publica igualmente y avisa. Termina con `Listo: http://192.168.x.x:N/`.
 

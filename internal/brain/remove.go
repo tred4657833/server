@@ -113,7 +113,9 @@ func RemoveAll(i *system.Info, st *state.State) error {
 		}
 		removeGlob("/etc/nginx/conf.d/*tawanzu*")
 		removeGlob("/etc/sysctl.d/99-tawanzu-nonlocal.conf")
-		return pkgs.Remove(pm, "nginx", "nginx-common", "nginx-core", "nginx-full", "nginx-light", "nginx-extras")
+		err := pkgs.Remove(pm, "nginx", "nginx-common", "nginx-core", "nginx-full", "nginx-light", "nginx-extras")
+		removeFile("/etc/nginx/sites-available/default.tawanzu-orig") // copia del sitio por defecto que dejó --index
+		return err
 	})
 
 	try("Certbot", func() error {

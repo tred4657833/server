@@ -41,7 +41,7 @@ Opciones globales: `--dry-run` (simula y no guarda estado), `--yes`, `--verbose`
 ### `add port`
 ```
 sudo tawanzu add port 1555                  # publica la app que corre en 127.0.0.1:1555 (muestra la URL con la IP de tu red local, p. ej. http://192.168.x.x/)
-sudo tawanzu add port 1555 --index          # tu app como página principal de la red local: http://192.168.x.x/ (puerto 80); reemplaza la que hubiera en el 80
+sudo tawanzu add port 1555 --index          # tu app como página principal de la red local: http://192.168.x.x/ (puerto 80); reescribe el sitio por defecto de Nginx
 sudo tawanzu add port 1555 --lan            # SOLO red local: http://192.168.x.x/ (puerto 80), nada hacia Internet
 sudo tawanzu add port 1555 --from 10.0.0.5  # solo accesible desde esa IP/red (firewall + Nginx)
 sudo tawanzu add port 3000 --public 8080    # Nginx escucha en 8080 y reenvía a la app en 3000
@@ -52,6 +52,11 @@ sudo tawanzu remove port 1555               # deshacer
 
 `add port` no necesita `init` previo: si falta Nginx o el firewall, los instala y los arranca, y al terminar muestra la URL lista
 con la IP de tu red local (`http://192.168.x.x:1555/`, o `http://192.168.x.x/` con `--index`).
+
+`--index` edita `/etc/nginx/sites-available/default` (el sitio por defecto de Nginx): lo reemplaza por la app, con `listen <IP privada>:80 default_server`
+y acceso limitado a tu red local, y lo habilita en `sites-enabled`. El contenido original queda en `default.tawanzu-orig`; `remove port 80` lo
+restaura. Si tu sitio por defecto estaba personalizado, pregunta antes; si tu sistema no usa `sites-available` (RHEL/Fedora), usa un archivo
+propio en `conf.d` como el resto de puertos.
 
 ### `remove all`
 ```
